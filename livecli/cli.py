@@ -1148,6 +1148,147 @@ def _find_probe_at(ref, path):
     return next(((s, i) for s, i in P.instances() if i.get("probe_id") == pid), None)
 
 
+GRIDS = {"1/4": 1.0, "1/8": 0.5, "1/16": 0.25, "1/32": 0.125}
+
+
+def _grid_offsets(onsets, grid):
+    out_ = []
+    for o in onsets:
+        g = GRIDS[grid]
+        off_beats = o["ppq"] - round(o["ppq"] / g) * g
+        out_.append(off_beats * 60.0 / o["tempo"] * 1000.0)
+    return out_
+
+
+def _onsets_parallel(pairs, sec, threshold):
+    import threading
+    res, errs = {}, {}
+
+    def job(s_, i):
+        try:
+            srv = P.Server(s_.path).connect()     # own connection: the two collections run at the same time
+            res[i["uid"]] = srv.request({"cmd": "onsets", "uid": i["uid"], "seconds": sec, "threshold_db": threshold},
+                                        timeout=sec + 15)
+            srv.close()
+        except (LiveError, OSError) as e:
+            errs[i["uid"]] = str(e)
+
+    th = [threading.Thread(target=job, args=p_) for p_ in pairs]
+    for t_ in th:
+        t_.start()
+    for t_ in th:
+        t_.join()
+    if errs:
+        raise LiveError("onsets: %s" % "; ".join(errs.values()))
+    return res
+
+
+def _timing(r, grid):
+    offs = _grid_offsets(r["onsets"], grid)
+    if not offs:
+        return None
+    med = statistics.median(offs)
+    mad = statistics.median([abs(x - med) for x in offs])
+    return {"onsets": len(offs), "median_ms": round(med, 3), "spread_ms": round(mad, 3)}
+
+
+def _sync_ref_track():
+    """A temporary MIDI track with Drift blips on every quarter note, playing from the session."""
+    r = call("track_create", kind="midi", name="LiveCLI Sync Ref", index=-1)
+    ref = r["ref"]
+    call("load", track=ref, path="instruments/Drift", timeout=30)
+    call("clip_create", track=ref, slot=0, length=4.0)
+    call("set_notes", track=ref, slot=0, notes=[{"pitch": 84, "start": float(k), "duration": 0.05, "velocity": 127} for k in range(4)])
+    call("clip_fire", track=ref, slot=0)
+    return ref
+
+
+@command("sync", "sync <track> [reference-track] [seconds] [--grid 1/16] [--probes A B] [--keep]", "timing of a track "
+         "against Live's grid (e.g. Overbridge or hardware on MIDI clock, playing their own sequencer): median offset of "
+         "its transients from the grid, minus a reference track sequenced by Live (a temporary one if not given) = the "
+         "Track Delay to set. Needs playback", "probes")
+def c_sync(a):
+    flags = [x for x in a if x.startswith("--")]
+    grid = a[a.index("--grid") + 1] if "--grid" in a else "1/16"
+    if grid not in GRIDS:
+        raise LiveError("grid: one of %s" % ", ".join(GRIDS))
+    args = [x for k, x in enumerate(a) if not x.startswith("--") and (k == 0 or a[k - 1] not in ("--grid", "--probes"))]
+    nums = [x for x in args if re.fullmatch(r"\d+(\.\d+)?", x)]
+    sec = float(nums[0]) if nums else 8.0
+    args = [x for x in args if x not in nums]
+    threshold = -50.0
+    cleanup, temp_ref = [], None
+    armed = [t_["ref"] for t_ in tracks() if t_.get("arm")] if "--probes" not in a else []
+    if "--probes" in a:                       # two probes given directly: no Live lookups
+        k = a.index("--probes")
+        _, insts = _probe_pairs()
+        pr, pt = P.find(insts, a[k + 2]), P.find(insts, a[k + 1])
+        names = (P.describe(pt[1]), P.describe(pr[1]))
+    else:
+        need(args, 1, "sync <track> [reference-track] [seconds]")
+        if not call("song")["playing"]:
+            raise LiveError("start playback first (the devices must be playing in sync with Live)")
+        t = track(args[0])
+        if len(args) > 1:
+            rt = track(args[1])
+        else:
+            temp_ref = _sync_ref_track()
+            rt = track(temp_ref)
+            time.sleep(1.0)
+
+        def probe_at_end(tr):
+            devs = track(tr["ref"])["devices"]
+            if devs:
+                pr_ = _find_probe_at(tr["ref"], devs[-1]["path"])
+                if pr_:
+                    return pr_
+            c_probe_add([tr["ref"], "sync"])
+            cleanup.append(tr["ref"])
+            return _find_probe_at(tr["ref"], track(tr["ref"])["devices"][-1]["path"])
+
+        pt, pr = probe_at_end(t), probe_at_end(rt)
+        if not pt or not pr:
+            raise LiveError("could not place the probes at the end of the two tracks")
+        names = (t["name"], rt["name"] + (" (temporary, Drift on quarters)" if temp_ref else ""))
+    try:
+        if not pt[0].has("onsets") or not pr[0].has("onsets"):
+            raise LiveError("the probes don't support 'onsets' (needs Reference/Loudline Probe 0.1.2+)")
+        res = _onsets_parallel([pt, pr], sec, threshold)
+        mt, mr = _timing(res[pt[1]["uid"]], grid), _timing(res[pr[1]["uid"]], grid)
+    finally:
+        if "--keep" not in flags:
+            for ref_ in cleanup:
+                cur = track(ref_)["devices"]
+                for k in range(len(cur) - 1, -1, -1):
+                    x = _find_probe_at(ref_, cur[k]["path"])
+                    if x and x[1].get("label") == "sync":
+                        call("delete_device", track=ref_, device=cur[k]["path"])
+            if temp_ref:
+                call("track_delete", track=temp_ref)
+            for ref_ in armed:                      # creating a MIDI track can steal the arm (exclusive arm)
+                try:
+                    call("track_set", track=ref_, arm=True)
+                except LiveError:
+                    pass
+    if not mt or not mr:
+        raise LiveError("no transients detected on %s" % (names[0] if not mt else names[1]))
+    late = round(mt["median_ms"] - mr["median_ms"], 2)
+    resd = {"track": names[0], "reference": names[1], "grid": grid, "seconds": sec, "track_timing": mt,
+            "reference_timing": mr, "late_ms": late, "track_delay_ms": -late}
+    if JSON:
+        return out(resd)
+    print("%s vs %s, %gs, grid %s" % (names[0], names[1], sec, grid))
+    print("  track:     %d transients, median %+.2f ms from the grid (spread %.2f ms)" % (mt["onsets"], mt["median_ms"], mt["spread_ms"]))
+    print("  reference: %d transients, median %+.2f ms from the grid (spread %.2f ms)" % (mr["onsets"], mr["median_ms"], mr["spread_ms"]))
+    if abs(late) < 0.1:
+        print("  in time: no Track Delay needed")
+    else:
+        print("  %s is %s by %.2f ms: set its Track Delay to %+.2f ms" % (names[0], "late" if late > 0 else "early", abs(late), -late))
+    if mt["spread_ms"] > 1.5:
+        print("  warning: the track's transients are spread (swing, humanized or off-grid notes): use a straight part, "
+              "like a kick on quarters, for a precise value")
+
+
 @command("latency", "latency <track> <device> [seconds] [--keep]", "real latency of a device or hardware insert, "
          "measured with two probes around it, vs the latency Live assumes (needs playback with signal)", "probes")
 def c_latency(a):

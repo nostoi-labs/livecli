@@ -148,6 +148,7 @@ class MockServer:
             c.append("history")
         if self.can_compare:
             c.append("compare")
+        c.append("onsets")
         return c
 
     def handle(self, req, conn):
@@ -179,6 +180,21 @@ class MockServer:
                 return p2db(sum(db2p(h[t]["bands_mid"][k]) for t in ts) / len(ts))
             gain = [round(avg(hb, k) - avg(ha, k), 2) for k in range(31)] if ts else [None] * 31
             return {"seconds": len(ts), "centers": [round(c, 1) for c in CENTERS], "gain_db": gain}
+        if cmd == "onsets":
+            # synthetic: one onset per 1/16 at 120 BPM, offset by the instance's timing (post = +10 ms, bass = +3 ms)
+            i = self.get_inst(req.get("uid"), req.get("probe_id"))
+            sec = float(req.get("seconds", 8))
+            late_ms = {"vox": 0.0, "vox_eq": 10.0, "bass": 3.0, "master": 0.0}[i.shape]
+            tempo, t0 = 120.0, time.monotonic() - self.t0
+            ppq0 = t0 * tempo / 60.0
+            on = []
+            k = math.ceil(ppq0 / 0.25)
+            while (k * 0.25 - ppq0) * 60.0 / tempo < sec:
+                jitter = random.gauss(0, 0.1)
+                ppq = k * 0.25 + (late_ms + jitter) / 1000.0 * tempo / 60.0
+                on.append({"t": round(t0 + (k * 0.25 - ppq0) * 0.5, 4), "ppq": round(ppq, 6), "tempo": tempo, "level_db": -8.0})
+                k += 1
+            return {"uid": i.uid, "sample_rate": 48000.0, "seconds": sec, "onsets": on}
         if cmd == "subscribe":
             self.subs.append((conn, req["uid"], float(req.get("hz", 10)), [0.0]))
             return {}

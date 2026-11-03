@@ -44,7 +44,7 @@ Every probe instance has:
 | `active` | bool | audio processed in the last 1 s |
 | `signal` | bool | RMS above -90 dBFS in the last 1 s |
 
-**The probe never alters audio.** Output equals input, bit for bit, at zero latency.
+**The probe never alters audio.** Output equals input, bit for bit, at zero latency. The only exception is `pulse` (§5.11), on explicit request and for a few seconds.
 
 ## 4. Measurements
 
@@ -93,7 +93,7 @@ If the server does not support `compare`, the client computes `gain_db` itself f
 
 ### 5.1 `hello`
 → `{"cmd":"hello"}`
-← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","reset","subscribe","label"]}`
+← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","onsets","pulse","reset","subscribe","label"]}`
 
 ### 5.2 `list`
 → `{"cmd":"list"}`
@@ -132,6 +132,24 @@ Also pushed to every subscriber: `{"event":"instance_added|instance_removed|inst
 - `aligned`: `"block"` = A and B sampled in the same audio cycle (exact to the sample); `"clock"` = aligned by timestamps (a few samples of possible error, e.g. probes on different tracks).
 - Timing: capture starts at the first request for that pair and stays on for 120 s after the last one. The first answer takes about `seconds + 2·max_lag + 0.5` s, later ones are immediate. Clients should wait at least `seconds + 2·max_lag + 3` s. Other requests on the same connection keep being answered meanwhile, so answers can arrive out of order: match them by `rid`.
 - Errors: `not_found`; `bad_request` (a == b, different sample rates, values out of range); `busy` (A or B without signal, below -90 dBFS, or not enough audio yet); `unsupported`.
+
+### 5.10 `onsets` (optional, capability `onsets`)
+For timing against the song grid: devices that run their own sequencer (Overbridge, hardware synced to MIDI clock) have no MIDI clip to compare with, so the reference is Live's timeline itself.
+→ `{"cmd":"onsets","uid":"<uid>","seconds":8,"threshold_db":-50}`
+← `{"ok":true,"uid":"...","sample_rate":48000.0,"seconds":8.0,"onsets":[{"t":1234.5678,"ppq":32.00125,"tempo":120.0,"level_db":-8.2}, ...]}`
+- Collects for `seconds` (0.5…30, default 8) from the moment of the request, **only while the host transport is playing** (VST3 `ProcessContext` with `kPlaying` and `kProjectTimeMusicValid`). Answers after `seconds`. `busy` if the transport is stopped or nothing was detected.
+- `ppq`: song position of the onset in quarter notes: the block's `projectTimeMusic` + (offset of the onset sample in the block / sample_rate) · tempo / 60. Precision target ±0.25 ms.
+- `tempo`: the block's tempo. `t`: server clock. `level_db`: peak of the transient.
+- Onset detection: rising edge of a short envelope (~1 ms, high-passed at ~40 Hz) crossing a level well above the recent floor and above `threshold_db`, refractory ~50 ms; the onset time is the first sample where the envelope crosses half of the transient's peak (amplitude, i.e. -6 dB). Stable and repeatable matters more than the exact definition: clients compare tracks measured the same way.
+
+### 5.11 `pulse` (optional, capability `pulse`)
+The only exception to "the probe never alters audio": on explicit request, for a few seconds, a probe adds short test impulses to its output, at exact grid positions. Use it to measure a chain precisely (a plugin, an External Audio Effect with hardware) or as a perfect timing reference.
+→ `{"cmd":"pulse","uid":"<uid>","every":1.0,"offset":0.0,"seconds":4,"level_db":-20,"mode":"add"}`
+← `{"ok":true,"uid":"...","until_t":1238.6}` immediately; pulses start at the next grid position while the transport plays.
+- `every`: grid step in quarter notes (1.0 = quarter notes), `offset`: extra position in quarter notes; impulses land on ppq = n·every + offset, to the sample (from `ProcessContext`).
+- Impulse: one sample at `level_db` (default -20 dBFS, max -6), or with `"shape":"click"` a 1 ms raised-cosine burst. `mode`: `"add"` (mixed with the input) or `"replace"` (input muted while pulsing, for a clean measurement).
+- Stops by itself after `seconds` (0.5…10, default 4) and when the transport stops; `{"cmd":"pulse","uid":...,"stop":true}` stops it now. The instance reports `"pulsing": true` in `list` while active.
+- Safety: never louder than -6 dBFS; refuse (`bad_request`) without an explicit request; hosts that send the track to speakers will play the clicks.
 
 ## 6. Plugin requirements (VST3)
 - Stereo in/out (mono variant optional). Pass-through, zero latency, no tail.

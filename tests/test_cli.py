@@ -309,6 +309,12 @@ class Probes(unittest.TestCase):
         code, r = run_json("mix", "1")
         self.assertIn("low-mid", r["crowded"])
 
+    def test_sync_probes(self):
+        code, r = run_json("sync", "--probes", "post", "pre", "1")
+        self.assertEqual(code, 0)
+        self.assertAlmostEqual(r["late_ms"], 10.0, delta=0.3)
+        self.assertAlmostEqual(r["track_delay_ms"], -10.0, delta=0.3)
+
     def test_label_and_find(self):
         run("probe-label", "#3", "bass di")
         code, r = run_json("measure", "bass di", "0.2")
