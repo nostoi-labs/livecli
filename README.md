@@ -45,7 +45,7 @@ A user can simply tell their agent: *"I want to use LiveCLI: install it and add 
 
 **What the agent does (terminal):**
 1. Check the platform: macOS with Ableton Live 11.3 or later (12.x recommended), Python 3.9+.
-2. Get LiveCLI: `git clone https://github.com/<owner>/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`), or the package once it is published.
+2. Get LiveCLI: `git clone https://github.com/nostoi-labs/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`), or the package once it is published.
 3. `live setup`: copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
 4. Optional probes for measurements: install the Reference Probe or Loudline Probe package (VST3, notarized) from the Releases page.
 5. `live skill install` (Claude Code; `--dir <project>/.claude/skills/livecli` for a project skill). Next session the agent knows the commands.
