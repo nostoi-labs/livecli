@@ -42,15 +42,16 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 
 `live help` lists everything; `live help <command>` shows one command. The groups are:
 
-- **Info:** `song`, `cpu`, `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`
-- **Transport:** `play`, `stop`, `continue`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`
+- **Info:** `ping`, `song`, `cpu`, `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`
+- **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`
 - **Tracks and mixer:** `track-new`, `track-delete`, `track-duplicate`, `track-rename`, `track-color`, `solo`, `mute`, `arm`, `monitor`, `volume`, `pan`, `send`
 - **Devices:** `set`, `on`, `off`, `load`, `delete`, `move`, `rename`, `replace`, `mode`
 - **Scenes and clips:** `scene ...`, `clip ...`, `set-notes`
 - **Browser:** `search`, `browse`
 - **Audio:** `capture` (optional, see below)
 - **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `probe-reset`, `probe-label`
-- **Raw:** `live call <cmd> '<json>'` calls any Remote Script command directly.
+- **Other:** `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
+- **Italian aliases:** `stato`, `tracce`, `parametri`, `imposta`, `accendi`/`spegni`, `carica`, `cancella`, `sposta`, `sostituisci`, `cerca`, `livelli`, `mandata`, `locatori`, `vai`, `modo`, `cattura`, `sonde`, `misura`, `confronta`, …
 
 References are short:
 - **track:** `t3`, `r0`, `m` (master), a return letter (`A`), or part of the name;

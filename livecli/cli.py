@@ -18,8 +18,12 @@ JSON = False
 
 def command(name, usage="", help="", group="other", aliases=()):
     def deco(f):
+        if name in ALIASES:
+            raise RuntimeError("command %s shadowed by an alias" % name)
         COMMANDS[name] = (f, usage, help, group)
         for a in aliases:
+            if a in COMMANDS:
+                raise RuntimeError("alias %s shadows a command" % a)
             ALIASES[a] = name
         return f
     return deco
@@ -204,7 +208,7 @@ def c_locators(a):
     out(ls, "\n".join("  bar %6g  %s" % (round(l["bar"], 3), l["name"]) for l in ls) or "no locators")
 
 
-@command("scenes", "scenes", "session scenes", "info", aliases=("scene",))
+@command("scenes", "scenes", "session scenes", "info")
 def c_scenes(a):
     sc = call("scenes")
     out(sc, "\n".join("  %3d %s%s" % (s["i"], s["name"], "  (tempo %g)" % s["tempo"] if s.get("tempo") else "") for s in sc))

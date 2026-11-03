@@ -186,6 +186,13 @@ class LiveCommands(unittest.TestCase):
         run("delete", "m", "utility")
         self.assertEqual(len(SONG.master_track.devices), n)
 
+    def test_scene_fire(self):
+        SONG.scenes[1].is_triggered = False
+        self.assertEqual(run("scene", "fire", "1")[0], 0)
+        self.assertTrue(SONG.scenes[1].is_triggered)
+        code, sc = run_json("scenes")
+        self.assertEqual(len(sc), 2)
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 
