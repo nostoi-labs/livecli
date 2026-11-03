@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: MIT
+// Live Probe core: protocol v0.1 commands (§5) and the Unix socket server (§1-2).
+#pragma once
+
+#include <atomic>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "json.h"
+
+namespace liveprobe {
+
+constexpr const char* kProtocolVersion = "0.1";
+
+struct Subscription {
+    bool all = false;
+    std::string uid;          // when !all
+    double hz = 10;
+    double windowS = 0.3;
+    bool hasFields = false;
+    std::vector<std::string> fields;
+    double next = 0;
+};
+
+/// Per-connection state.
+struct Session {
+    bool events = false;  // receives instance_added/removed/changed
+    std::vector<Subscription> subs;
+};
+
+class Protocol {
+public:
+    /// One request line in, one response line out (no trailing newline).
+    static std::string handle(const std::string& line, Session& s, double now);
+    /// Appends due snapshot event lines ("...\n") for the session's subscriptions.
+    static void dueEvents(Session& s, double now, std::string& out);
+    /// Milliseconds until the session's next due subscription (or `cap`).
+    static int msUntilDue(const Session& s, double now, int cap);
+};
+
+/// Socket directory: $LIVEPROBES_DIR, else ~/Library/Application Support/LiveProbes.
+std::string socketDir();
+
+class Server {
+public:
+    Server();
+    ~Server();
+    /// Creates the directory, removes stale sockets of this product, binds and starts the thread.
+    bool start();
+    void stop();
+    const std::string& path() const { return path_; }
+
+private:
+    void run();
+    void wake();
+    std::string path_;
+    int listenFd_ = -1;
+    int wakePipe_[2] = {-1, -1};
+    std::atomic<bool> stop_{false};
+    std::thread th_;
+};
+
+}  // namespace liveprobe
