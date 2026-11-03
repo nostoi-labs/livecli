@@ -114,6 +114,36 @@ public:
     uint32_t lastTransportFlags() const { return lastFlags_.load(std::memory_order_relaxed); }
     double lastAudioT() const { return lastAudioT_.load(std::memory_order_relaxed); }
 
+    // ---- signal (§5.12): test signals, replacing (default) or added to the input ----
+    enum class SignalKind : int { Pink = 0, Sine = 1, Sweep = 2, Silence = 3 };
+    struct SignalRequest {
+        SignalKind kind = SignalKind::Pink;
+        double levelDb = -20;      // pink: RMS; sine, sweep: peak. Capped (see below)
+        double freq = 1000, from = 20, to = 20000;
+        double seconds = 5;        // 0.5…30, including the fades
+        bool add = false;          // default: replace the input
+        uint64_t seed = 0;         // pink noise: 0 = new noise every time
+        double untilT = 0;         // server clock deadline
+    };
+    static constexpr double kSignalMaxPeakDb = -6.0;   // any generated sample, enforced on the audio thread
+    static constexpr double kSignalMaxPinkRmsDb = -18.0;  // pink noise RMS: 4σ peaks stay under -6 dBFS
+    static constexpr double kSignalFadeS = 0.010;
+    void startSignal(const SignalRequest& r);
+    /// Ends with a 10 ms fade (stop command). `now`: no fade (deactivation, removal).
+    void stopSignal(bool now = false);
+    /// Audio thread, after the input was copied to the output. True while the output differs from the input.
+    bool renderSignal(float* const* out, int channels, int frames, const Transport& tr, int64_t samplePos,
+                      double sampleRate, double t);
+    struct SignalStatus {
+        bool active = false, started = false;
+        uint32_t run = 0;          // increments with every started signal
+        double startT = 0, startPpq = 0, elapsedS = 0;
+        bool startPpqValid = false;
+        long long startSamplePos = -1;
+    };
+    SignalStatus signalStatus() const;
+    bool generating() const { return sigActiveOut_.load(std::memory_order_relaxed); }
+
     // ---- onsets (only while a client asks) ----
     /// Server thread: detect onsets until `until` (server clock), at least down to `thresholdDb`.
     void armOnsets(double until, double thresholdDb);
@@ -164,6 +194,28 @@ private:
     AudioRing ring_;
     std::atomic<double> lastAudioT_{-1};
     std::atomic<uint32_t> lastFlags_{0};
+
+    // signal: command by seqlock (writers serialised by pulseWriteM_), generator state owned by the audio thread
+    std::atomic<uint32_t> sigSeq_{0};
+    std::atomic<int> sCmdKind_{0}, sCmdStop_{2};  // stop: 0 run, 1 fade out, 2 now
+    std::atomic<bool> sCmdAdd_{false};
+    std::atomic<double> sCmdLevel_{0.1}, sCmdFreq_{1000}, sCmdFrom_{20}, sCmdTo_{20000}, sCmdSeconds_{5}, sCmdUntil_{0};
+    std::atomic<uint64_t> sCmdSeed_{1};
+    std::atomic<double> sCmdPinkScale_{1};
+    // status, written by the audio thread
+    std::atomic<bool> sigActiveOut_{false}, sigStarted_{false}, sigPpqValid_{false};
+    std::atomic<uint32_t> sigRun_{0};
+    std::atomic<double> sigStartT_{0}, sigStartPpq_{0}, sigElapsed_{0};
+    std::atomic<long long> sigStartPos_{-1};
+    // generator (audio thread only)
+    uint32_t sigSeen_ = 0;
+    bool gActive_ = false, gAdd_ = false;
+    int gKind_ = 0;
+    double gLevel_ = 0, gFreq_ = 0, gFrom_ = 0, gTo_ = 0, gUntil_ = 0, gPinkScale_ = 1;
+    long long gTotal_ = 0, gDone_ = 0, gFade_ = 1;
+    double gPhase_ = 0, gSweepL_ = 1, gSweepT_ = 1;
+    uint64_t gRng_ = 1;
+    double gPink_[7] = {}, gDcX_ = 0, gDcY_ = 0;
 
     // pulse: command handed over with a seqlock (writers serialised by pulseWriteM_), state owned by the audio thread
     std::mutex pulseWriteM_;

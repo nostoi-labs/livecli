@@ -408,6 +408,77 @@ std::string Protocol::handle(const std::string& line, Session& s, double now) {
         r.w.key("playing").boolean((f & Transport::kPlaying) != 0);
         return r.done();
     }
+    if (cmd == "signal") {
+        if (!hasCap("signal")) return error(rid, "unsupported", "signal is not supported");
+        auto inst = resolve(req, rid, err);
+        if (!inst) return err;
+        if (flag(req, "stop")) {
+            inst->stopSignal(false);  // 10 ms fade out
+            Reply r(rid);
+            r.w.key("uid").str(inst->uid);
+            r.w.key("stopped").boolean(true);
+            return r.done();
+        }
+        if (flag(req, "status")) {
+            Instance::SignalStatus st = inst->signalStatus();
+            Reply r(rid);
+            r.w.key("uid").str(inst->uid);
+            r.w.key("active").boolean(st.active);
+            r.w.key("run").integer(st.run);
+            if (st.started) {
+                r.w.key("started_t").number(st.startT, 6);
+                r.w.key("start_sample_pos").integer(st.startSamplePos);
+                r.w.key("start_ppq");
+                if (st.startPpqValid) r.w.number(st.startPpq, 6); else r.w.null();
+                r.w.key("elapsed_s").number(st.elapsedS, 4);
+            }
+            return r.done();
+        }
+        Instance::SignalRequest q;
+        std::string kind = "pink", mode = "replace";
+        if (const JValue* v = req.get("kind")) kind = v->isString() ? v->str : "?";
+        if (const JValue* v = req.get("mode")) mode = v->isString() ? v->str : "?";
+        if (kind == "pink") q.kind = Instance::SignalKind::Pink;
+        else if (kind == "sine") q.kind = Instance::SignalKind::Sine;
+        else if (kind == "sweep") q.kind = Instance::SignalKind::Sweep;
+        else if (kind == "silence") q.kind = Instance::SignalKind::Silence;
+        else return error(rid, "bad_request", "kind: pink, sine, sweep or silence");
+        if (mode != "replace" && mode != "add") return error(rid, "bad_request", "mode: replace or add");
+        q.add = mode == "add";
+        if (now - inst->lastAudioT() > 1.0) return error(rid, "busy", "no audio processed in the last second");
+        const double sr = inst->identity().sampleRate;
+        const double nyq = 0.45 * sr;
+        q.seconds = numberOr(req, "seconds", 5, 0.5, 30);
+        q.freq = numberOr(req, "freq", 1000, 1, nyq);
+        q.from = numberOr(req, "from", 20, 1, nyq);
+        q.to = numberOr(req, "to", 20000, 1, nyq);
+        if (q.kind == Instance::SignalKind::Sweep && !(q.to > q.from * 1.01))
+            return error(rid, "bad_request", "sweep: to must be above from");
+        const double maxDb = q.kind == Instance::SignalKind::Pink ? Instance::kSignalMaxPinkRmsDb : Instance::kSignalMaxPeakDb;
+        q.levelDb = std::min(numberOr(req, "level_db", -20, -120, 0), maxDb);
+        if (const JValue* v = req.get("seed"))
+            if (v->isNumber() && v->num >= 1) q.seed = (uint64_t)v->num;
+        q.untilT = now + q.seconds + 0.5;  // safety net if the host stops calling the plug-in
+        inst->startSignal(q);
+        Reply r(rid);
+        r.w.key("uid").str(inst->uid);
+        r.w.key("until_t").number(q.untilT, 3);
+        r.w.key("kind").str(kind);
+        r.w.key("level_db").number(q.levelDb, 1);
+        r.w.key("level_ref").str(q.kind == Instance::SignalKind::Pink ? "rms" : "peak");
+        r.w.key("seconds").number(q.seconds, 3);
+        r.w.key("fade_ms").number(Instance::kSignalFadeS * 1000.0, 1);
+        r.w.key("mode").str(mode);
+        r.w.key("sample_rate").number(sr, 1);
+        if (q.kind == Instance::SignalKind::Sine) r.w.key("freq").number(q.freq, 3);
+        if (q.kind == Instance::SignalKind::Sweep) {
+            r.w.key("from").number(q.from, 3);
+            r.w.key("to").number(q.to, 3);
+            r.w.key("sweep").str("exponential: f(t) = from * exp(t / seconds * ln(to / from)), phase 0 at the first sample");
+        }
+        if (q.seed) r.w.key("seed").integer((long long)q.seed);
+        return r.done();
+    }
     if (cmd == "onsets") {
         if (!hasCap("onsets")) return error(rid, "unsupported", "onsets is not supported");
         auto inst = resolve(req, rid, err);

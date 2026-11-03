@@ -311,6 +311,7 @@ void Instance::writeIdentity(JWriter& w, double now) {
     w.key("signal").boolean(signal);
     w.key("dropped_blocks").integer((long long)ring_.dropped());
     w.key("pulsing").boolean(pulsing());
+    w.key("generating").boolean(generating());
     w.endObject();
 }
 
@@ -636,6 +637,183 @@ bool Instance::renderPulse(float* const* out, int channels, int n, const Transpo
     } else {
         place(tr.ppq, 0, n);
     }
+    return true;
+}
+
+// ---------------------------------------------------------------- signal
+
+namespace {
+/// Paul Kellet's refined pink filter on uniform white noise in [-1, 1): -3 dB/octave.
+inline double pinkStep(double* b, double white) {
+    b[0] = 0.99886 * b[0] + white * 0.0555179;
+    b[1] = 0.99332 * b[1] + white * 0.0750759;
+    b[2] = 0.96900 * b[2] + white * 0.1538520;
+    b[3] = 0.86650 * b[3] + white * 0.3104856;
+    b[4] = 0.55000 * b[4] + white * 0.5329522;
+    b[5] = -0.7616 * b[5] - white * 0.0168980;
+    const double pink = b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + white * 0.5362;
+    b[6] = white * 0.115926;
+    return pink;
+}
+inline double uniform(uint64_t& s) {  // xorshift64*, [-1, 1)
+    s ^= s >> 12; s ^= s << 25; s ^= s >> 27;
+    return (double)((s * 2685821657736338717ULL) >> 11) * (2.0 / 9007199254740992.0) - 1.0;
+}
+/// RMS of the pink generator (filter + 5 Hz DC blocker) at `sr`: computed off the audio thread, cached.
+double pinkRms(double sr) {
+    static std::mutex m;
+    static double lastSr = 0, lastRms = 1;
+    std::lock_guard<std::mutex> lk(m);
+    if (sr == lastSr) return lastRms;
+    uint64_t s = 0x9E3779B97F4A7C15ULL;
+    double b[7] = {}, acc = 0, dx = 0, dy = 0;
+    const double dcR = std::exp(-2.0 * M_PI * 5.0 / sr);
+    const int settle = (int)(2 * sr), n = 1 << 22;
+    for (int i = 0; i < settle + n; i++) {
+        const double p = pinkStep(b, uniform(s));
+        dy = p - dx + dcR * dy;
+        dx = p;
+        if (i >= settle) acc += dy * dy;
+    }
+    lastSr = sr;
+    lastRms = std::sqrt(acc / n);
+    return lastRms;
+}
+}  // namespace
+
+void Instance::startSignal(const SignalRequest& r) {
+    double sr;
+    {
+        std::lock_guard<std::mutex> lk(idm_);
+        sr = id_.sampleRate > 0 ? id_.sampleRate : 48000.0;
+    }
+    const double pinkScale = 1.0 / pinkRms(sr);
+    double levelDb = r.kind == SignalKind::Pink ? std::min(r.levelDb, kSignalMaxPinkRmsDb) : std::min(r.levelDb, kSignalMaxPeakDb);
+    std::lock_guard<std::mutex> lk(pulseWriteM_);
+    sigSeq_.fetch_add(1, std::memory_order_acq_rel);
+    sCmdStop_.store(0, std::memory_order_relaxed);
+    sCmdKind_.store((int)r.kind, std::memory_order_relaxed);
+    sCmdAdd_.store(r.add, std::memory_order_relaxed);
+    sCmdLevel_.store(std::pow(10.0, levelDb / 20.0), std::memory_order_relaxed);
+    sCmdFreq_.store(r.freq, std::memory_order_relaxed);
+    sCmdFrom_.store(r.from, std::memory_order_relaxed);
+    sCmdTo_.store(r.to, std::memory_order_relaxed);
+    sCmdSeconds_.store(std::max(0.0, std::min(30.0, r.seconds)), std::memory_order_relaxed);
+    sCmdUntil_.store(r.untilT, std::memory_order_relaxed);
+    sCmdSeed_.store(r.seed ? r.seed : (uint64_t)(monoNow() * 1e9) | 1, std::memory_order_relaxed);
+    sCmdPinkScale_.store(pinkScale, std::memory_order_relaxed);
+    sigSeq_.fetch_add(1, std::memory_order_release);
+}
+
+void Instance::stopSignal(bool now) {
+    std::lock_guard<std::mutex> lk(pulseWriteM_);
+    sigSeq_.fetch_add(1, std::memory_order_acq_rel);
+    sCmdStop_.store(now ? 2 : 1, std::memory_order_relaxed);
+    sigSeq_.fetch_add(1, std::memory_order_release);
+}
+
+Instance::SignalStatus Instance::signalStatus() const {
+    SignalStatus st;
+    st.active = sigActiveOut_.load(std::memory_order_relaxed);
+    st.started = sigStarted_.load(std::memory_order_relaxed);
+    st.run = sigRun_.load(std::memory_order_relaxed);
+    st.startT = sigStartT_.load(std::memory_order_relaxed);
+    st.startPpq = sigStartPpq_.load(std::memory_order_relaxed);
+    st.startPpqValid = sigPpqValid_.load(std::memory_order_relaxed);
+    st.startSamplePos = sigStartPos_.load(std::memory_order_relaxed);
+    st.elapsedS = sigElapsed_.load(std::memory_order_relaxed);
+    return st;
+}
+
+bool Instance::renderSignal(float* const* out, int channels, int n, const Transport& tr, int64_t samplePos, double sr,
+                            double t) {
+    const uint32_t s1 = sigSeq_.load(std::memory_order_acquire);
+    if (s1 != sigSeen_ && (s1 & 1u) == 0) {
+        const int stop = sCmdStop_.load(std::memory_order_relaxed), kind = sCmdKind_.load(std::memory_order_relaxed);
+        const bool add = sCmdAdd_.load(std::memory_order_relaxed);
+        const double level = sCmdLevel_.load(std::memory_order_relaxed), freq = sCmdFreq_.load(std::memory_order_relaxed);
+        const double from = sCmdFrom_.load(std::memory_order_relaxed), to = sCmdTo_.load(std::memory_order_relaxed);
+        const double seconds = sCmdSeconds_.load(std::memory_order_relaxed), until = sCmdUntil_.load(std::memory_order_relaxed);
+        const uint64_t seed = sCmdSeed_.load(std::memory_order_relaxed);
+        const double pinkScale = sCmdPinkScale_.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (sigSeq_.load(std::memory_order_relaxed) == s1) {
+            sigSeen_ = s1;
+            if (stop == 2) {
+                gActive_ = false;
+            } else if (stop == 1) {
+                if (gActive_) gTotal_ = std::min(gTotal_, gDone_ + gFade_);  // fade out from here
+            } else {
+                gActive_ = true;
+                gKind_ = kind; gAdd_ = add; gLevel_ = level; gFreq_ = freq; gFrom_ = from; gTo_ = to;
+                gUntil_ = until; gPinkScale_ = pinkScale;
+                gFade_ = std::max(1LL, (long long)std::llround(kSignalFadeS * sr));
+                gTotal_ = std::max(2 * gFade_, (long long)std::llround(seconds * sr));
+                gDone_ = 0;
+                gPhase_ = 0;
+                gSweepL_ = std::log(to / from);
+                gSweepT_ = gTotal_ / sr;  // the sweep spans the whole duration (fades included)
+                gRng_ = seed ? seed : 1;
+                for (double& b : gPink_) b = 0;
+                for (int i = 0; i < 4096; i++) pinkStep(gPink_, uniform(gRng_));  // settle the filter
+                gDcX_ = gDcY_ = 0;
+                sigRun_.fetch_add(1, std::memory_order_relaxed);
+                sigStartT_.store(t, std::memory_order_relaxed);
+                sigStartPos_.store(samplePos, std::memory_order_relaxed);
+                const bool ppqOk = (tr.flags & Transport::kMusicValid) != 0;
+                sigPpqValid_.store(ppqOk, std::memory_order_relaxed);
+                sigStartPpq_.store(ppqOk ? tr.ppq : 0.0, std::memory_order_relaxed);
+                sigStarted_.store(true, std::memory_order_relaxed);
+            }
+        }
+    }
+    if (gActive_ && (t > gUntil_ || gDone_ >= gTotal_)) gActive_ = false;
+    if (!gActive_) {
+        sigActiveOut_.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    sigActiveOut_.store(true, std::memory_order_relaxed);
+    const double cap = 0.5011872336272722;  // -6 dBFS: no generated sample goes above, whatever arrived
+    const double level = std::min(gLevel_, cap);
+    const double dcR = std::exp(-2.0 * M_PI * 5.0 / sr);  // DC blocker at 5 Hz for the noise
+    const double L = gSweepL_, T = gSweepT_;
+    int i = 0;
+    for (; i < n && gDone_ < gTotal_; i++, gDone_++) {
+        double x = 0;
+        switch (gKind_) {
+            case 0: {  // pink noise, RMS = level
+                const double p = pinkStep(gPink_, uniform(gRng_)) * gPinkScale_;
+                gDcY_ = p - gDcX_ + dcR * gDcY_;
+                gDcX_ = p;
+                x = gDcY_ * level;
+                break;
+            }
+            case 1:  // sine, peak = level
+                x = level * std::sin(gPhase_);
+                gPhase_ += 2.0 * M_PI * gFreq_ / sr;
+                if (gPhase_ > 2.0 * M_PI) gPhase_ -= 2.0 * M_PI;
+                break;
+            case 2: {  // exponential (Farina) sweep over the whole duration: f(t) = from · e^(t/T · ln(to/from))
+                const double tt = gDone_ / sr;
+                x = level * std::sin(2.0 * M_PI * gFrom_ * T / L * (std::exp(tt / T * L) - 1.0));
+                break;
+            }
+            default:  // silence
+                x = 0;
+        }
+        // 10 ms raised-cosine fades at both ends
+        double g = 1.0;
+        if (gDone_ < gFade_) g = 0.5 - 0.5 * std::cos(M_PI * (gDone_ + 0.5) / gFade_);
+        const long long left = gTotal_ - 1 - gDone_;
+        if (left < gFade_) g = std::min(g, 0.5 - 0.5 * std::cos(M_PI * (left + 0.5) / gFade_));
+        x = std::max(-cap, std::min(cap, x * g));
+        for (int c = 0; c < channels; c++) {
+            if (!out[c]) continue;
+            out[c][i] = gAdd_ ? (float)(out[c][i] + x) : (float)(out[c][i] * (1.0 - g) + x);  // replace: crossfade
+        }
+    }
+    sigElapsed_.store(gDone_ / sr, std::memory_order_relaxed);
+    if (gDone_ >= gTotal_) gActive_ = false;
     return true;
 }
 

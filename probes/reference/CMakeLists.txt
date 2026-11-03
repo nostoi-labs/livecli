@@ -13,7 +13,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "")
 endif()
 
-project(reference-probe VERSION 0.1.2 LANGUAGES C CXX)
+project(reference-probe VERSION 0.1.3 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()

@@ -521,6 +521,209 @@ static void testPulse() {
     hub.remove(a);
 }
 
+// ---- signal: generators through the audio-thread path
+struct SignalRun {
+    std::vector<float> outL, inL;
+    long firstDiff = -1, lastDiff = -1;
+};
+
+static SignalRun runSignal(Instance& in, long total, bool noiseIn, int block = 512, double t0 = 7000, long stopAt = -1,
+                           bool stopNow = false, double tStep = 1.0) {
+    SignalRun sr;
+    std::mt19937 rng(9);
+    std::normal_distribution<float> g(0.f, 0.05f);
+    std::vector<float> L(block), R(block), oL(block), oR(block);
+    Transport none;  // the transport does not matter for `signal`
+    for (long done = 0; done < total; done += block) {
+        if (stopAt >= 0 && done >= stopAt && done < stopAt + block) in.stopSignal(stopNow);
+        for (int i = 0; i < block; i++) { L[i] = noiseIn ? g(rng) : 0.f; R[i] = L[i]; }
+        oL = L;
+        oR = R;
+        float* outs[2] = {oL.data(), oR.data()};
+        in.renderSignal(outs, 2, block, none, done, 48000, t0 + tStep * done / 48000.0);
+        for (int i = 0; i < block; i++) {
+            sr.outL.push_back(oL[i]);
+            sr.inL.push_back(L[i]);
+            if (std::memcmp(&oL[i], &L[i], 4) != 0) {
+                if (sr.firstDiff < 0) sr.firstDiff = done + i;
+                sr.lastDiff = done + i;
+            }
+        }
+    }
+    return sr;
+}
+
+static double rmsDb(const std::vector<float>& x, long a, long b) {
+    double e = 0;
+    for (long i = a; i < b; i++) e += (double)x[(size_t)i] * x[(size_t)i];
+    return 10 * std::log10(e / (double)(b - a));
+}
+static double peakDb(const std::vector<float>& x, long a, long b) {
+    float p = 0;
+    for (long i = a; i < b; i++) p = std::max(p, std::fabs(x[(size_t)i]));
+    return 20 * std::log10(p);
+}
+
+static void testSignal() {
+    Hub& hub = Hub::get();
+    auto a = hub.add();
+    Instance::SignalRequest rq;
+    rq.untilT = 1e12;
+
+    // sine 1 kHz at -20 dBFS peak, 1 s, replacing silence: peak -20.0, RMS -23.0, 10 ms fades, then bit-exact
+    rq.kind = Instance::SignalKind::Sine;
+    rq.seconds = 1;
+    a->startSignal(rq);
+    SignalRun r = runSignal(*a, 96000, false);
+    printf("  sine -20 dBFS: peak %.2f, RMS %.2f, first sample %.5f, at 5 ms %.4f, ends at sample %ld\n", peakDb(r.outL, 4800, 43200),
+           rmsDb(r.outL, 4800, 43200), r.outL[0], std::fabs(r.outL[240]), r.lastDiff);
+    NEAR(peakDb(r.outL, 4800, 43200), -20.0, 0.01);
+    NEAR(rmsDb(r.outL, 4800, 43200), -23.01, 0.01);
+    CHECK(std::fabs(r.outL[1]) < 0.001 && peakDb(r.outL, 0, 120) < -30);  // fade in
+    CHECK(peakDb(r.outL, 48000 - 60, 48000) < -30);                        // fade out
+    CHECK(r.lastDiff < 48000);  // 1 s exactly, then the input again (bit-exact)
+
+    // level cap: 0 dB asked → -6 dBFS peak
+    rq.levelDb = 0;
+    a->startSignal(rq);
+    r = runSignal(*a, 48000, false);
+    NEAR(peakDb(r.outL, 0, 48000), -6.0, 0.01);
+    rq.levelDb = -20;
+
+    // add mode: the input stays, the sine on top; replace (default) mutes the input after the fade
+    rq.add = true;
+    a->startSignal(rq);
+    r = runSignal(*a, 96000, true);
+    double diffRms = 0;
+    for (long i = 4800; i < 43200; i++) { double d = r.outL[(size_t)i] - r.inL[(size_t)i]; diffRms += d * d; }
+    NEAR(10 * std::log10(diffRms / 38400), -23.01, 0.01);
+    CHECK(r.lastDiff < 48000);
+    rq.add = false;
+    a->startSignal(rq);
+    r = runSignal(*a, 96000, true);
+    NEAR(rmsDb(r.outL, 4800, 43200), -23.01, 0.01);  // the noise input is gone
+    bool backExact = true;
+    for (long i = 48000; i < 96000; i++) backExact = backExact && r.outL[(size_t)i] == r.inL[(size_t)i];
+    CHECK(backExact);
+
+    // sweep 20 Hz → 20 kHz over 5 s: instantaneous frequency from zero crossings vs 20 · 1000^(t/5)
+    rq.kind = Instance::SignalKind::Sweep;
+    rq.seconds = 5;
+    a->startSignal(rq);
+    r = runSignal(*a, 5 * 48000 + 4800, false);
+    printf("  sweep 20-20000 Hz, 5 s:");
+    for (double tt : {1.0, 2.5, 4.0}) {
+        long c = (long)(tt * 48000);
+        std::vector<double> zc;
+        for (long i = c - 2400; i < c + 2400; i++)
+            if (r.outL[(size_t)i] <= 0 && r.outL[(size_t)i + 1] > 0) zc.push_back(i + r.outL[(size_t)i] / (r.outL[(size_t)i] - r.outL[(size_t)i + 1]));
+        // frequency at the middle: crossings closest to the centre
+        double f = NAN;
+        for (size_t k = 1; k < zc.size(); k++)
+            if (zc[k - 1] <= c && zc[k] > c) f = 48000.0 / (zc[k] - zc[k - 1]);
+        const double expect = 20.0 * std::pow(1000.0, tt / 5.0);
+        printf(" t=%.1f s %.1f Hz (expected %.1f)", tt, f, expect);
+        NEAR(f / expect, 1.0, 0.01);
+    }
+    printf(", peak %.2f dBFS\n", peakDb(r.outL, 4800, 5 * 48000 - 4800));
+    NEAR(peakDb(r.outL, 4800, 5 * 48000 - 4800), -20.0, 0.02);
+
+    // pink noise at -20 dBFS RMS, seed 42, 10 s: RMS, repeatable, flat in 1/3-octave bands (through the band engine)
+    rq.kind = Instance::SignalKind::Pink;
+    rq.seconds = 10;
+    rq.seed = 42;
+    a->startSignal(rq);
+    r = runSignal(*a, 10 * 48000, false);
+    a->startSignal(rq);
+    SignalRun r2 = runSignal(*a, 10 * 48000, false);
+    CHECK(r.outL == r2.outL);
+    printf("  pink -20 dBFS RMS: RMS %.2f, peak %.2f dBFS\n", rmsDb(r.outL, 4800, 10 * 48000 - 4800), peakDb(r.outL, 0, 10 * 48000));
+    NEAR(rmsDb(r.outL, 4800, 10 * 48000 - 4800), -20.0, 0.3);
+    CHECK(peakDb(r.outL, 0, 10 * 48000) <= -6.0 + 1e-3);
+    {
+        auto b = hub.add();
+        b->setFormat(2, 48000);
+        const double tb = std::floor(monoNow()) - 2000;
+        for (long done = 0; done < 10 * 48000; done += 480) {
+            b->pushAudio(&r.outL[(size_t)done], &r.outL[(size_t)done], 480, 48000, done, tb + done / 48000.0);
+            if ((done / 480) % 16 == 0) b->analyze();
+        }
+        b->analyze();
+        Session s;
+        JValue v = call(s, R"({"cmd":"get","uid":")" + b->uid + R"(","window_s":10})", tb + 10);
+        const JValue* mid = v.get("snapshot")->get("bands")->get("mid");
+        double lo = 1e9, hi = -1e9, sum = 0;
+        int cnt = 0;
+        for (int k = 2; k <= 29; k++) {  // 31.7 Hz … 16 kHz
+            double x = num(&mid->arr[(size_t)k]);
+            lo = std::min(lo, x); hi = std::max(hi, x); sum += x; cnt++;
+        }
+        printf("  pink in 1/3-octave bands 31.7 Hz-16 kHz: mean %.2f dB, min %.2f, max %.2f (spread %.2f dB); 20 Hz %.2f, 20 kHz %.2f\n",
+               sum / cnt, lo, hi, hi - lo, num(&mid->arr[0]), num(&mid->arr[30]));
+        CHECK(hi - lo < 2.0);
+        hub.remove(b);
+    }
+    rq.seed = 0;
+
+    // pink asked at -6 dBFS RMS → capped at -18 dBFS RMS
+    rq.levelDb = -6;
+    rq.seconds = 3;
+    a->startSignal(rq);
+    r = runSignal(*a, 3 * 48000, false);
+    NEAR(rmsDb(r.outL, 4800, 3 * 48000 - 4800), -18.0, 0.4);
+    CHECK(peakDb(r.outL, 0, 3 * 48000) <= -6.0 + 1e-3);
+    rq.levelDb = -20;
+
+    // stop with fade (10 ms) and immediate stop; wall-clock deadline; silence replaces the input
+    rq.kind = Instance::SignalKind::Sine;
+    rq.seconds = 10;
+    a->startSignal(rq);
+    r = runSignal(*a, 2 * 48000, false, 512, 7000, 24000);
+    printf("  stop at 24000 with fade: last changed sample %ld\n", r.lastDiff);
+    CHECK(r.lastDiff >= 24000 && r.lastDiff < 24576 + 480);
+    a->startSignal(rq);
+    r = runSignal(*a, 2 * 48000, false, 512, 7000, 24064, true);
+    CHECK(r.lastDiff < 24064);
+    rq.untilT = 7000 + 0.5;
+    a->startSignal(rq);
+    r = runSignal(*a, 2 * 48000, false);
+    CHECK(r.lastDiff < 24576);
+    rq.untilT = 1e12;
+    rq.kind = Instance::SignalKind::Silence;
+    rq.seconds = 1;
+    a->startSignal(rq);
+    r = runSignal(*a, 96000, true);
+    CHECK(rmsDb(r.outL, 480, 47520) < -300 || peakDb(r.outL, 480, 47520) < -200);
+    CHECK(r.lastDiff < 48000);
+
+    // protocol: bad kind, bad sweep, status with start position
+    Session s;
+    std::vector<float> z(256, 0.f);
+    Transport play;
+    play.flags = Transport::kMusicValid | Transport::kTempoValid;
+    play.ppq = 8.0;
+    a->setFormat(2, 48000);
+    a->pushAudio(z.data(), z.data(), 256, 48000, 0, monoNow(), &play);
+    JValue v = call(s, R"({"cmd":"signal","uid":")" + a->uid + R"(","kind":"square"})", monoNow());
+    CHECK(v.get("code") && v.get("code")->str == "bad_request");
+    v = call(s, R"({"cmd":"signal","uid":")" + a->uid + R"(","kind":"sweep","from":1000,"to":100})", monoNow());
+    CHECK(v.get("code") && v.get("code")->str == "bad_request");
+    v = call(s, R"({"cmd":"signal","uid":")" + a->uid + R"(","kind":"pink","level_db":0,"seconds":99})", monoNow());
+    printf("  signal request: level_db %.1f (%s), seconds %.1f, mode %s\n", num(v.get("level_db")), v.get("level_ref")->str.c_str(),
+           num(v.get("seconds")), v.get("mode")->str.c_str());
+    CHECK(v.get("ok")->b && num(v.get("level_db")) == -18.0 && num(v.get("seconds")) == 30.0 && v.get("mode")->str == "replace");
+    std::vector<float> o1(512, 0.f), o2(512, 0.f);
+    float* outs[2] = {o1.data(), o2.data()};
+    a->renderSignal(outs, 2, 512, play, 123456, 48000, monoNow());
+    v = call(s, R"({"cmd":"signal","uid":")" + a->uid + R"(","status":true})", monoNow());
+    printf("  status: active %d, start_sample_pos %.0f, start_ppq %.3f\n", (int)v.get("active")->b, num(v.get("start_sample_pos")),
+           num(v.get("start_ppq")));
+    CHECK(v.get("active")->b && num(v.get("start_sample_pos")) == 123456 && num(v.get("start_ppq")) == 8.0);
+    v = call(s, R"({"cmd":"signal","uid":")" + a->uid + R"(","stop":true})", monoNow());
+    CHECK(v.get("ok")->b && v.get("stopped")->b);
+    hub.remove(a);
+}
+
 static void testRing() {
     AudioRing ring(1024, 16);
     std::vector<float> a(300), b(300), l(AudioRing::kMaxChunk), r(AudioRing::kMaxChunk);
@@ -711,6 +914,7 @@ int main() {
     testDelay();
     testOnsets();
     testPulse();
+    testSignal();
     testRing();
     testSnapshot();
     testCommands();

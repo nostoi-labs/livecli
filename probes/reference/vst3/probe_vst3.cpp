@@ -70,6 +70,7 @@ tresult PLUGIN_API ProbeProcessor::initialize(FUnknown* context) {
 tresult PLUGIN_API ProbeProcessor::terminate() {
     if (inst_) {
         inst_->stopPulse();
+        inst_->stopSignal(true);
         Hub::get().remove(inst_);
         inst_.reset();
     }
@@ -93,7 +94,10 @@ tresult PLUGIN_API ProbeProcessor::connect(Vst::IConnectionPoint* other) {
 
 tresult PLUGIN_API ProbeProcessor::setActive(TBool state) {
     if (state) sendSerial();
-    else if (inst_) inst_->stopPulse();  // never resume pulsing after a deactivation
+    else if (inst_) {  // never resume pulsing or a test signal after a deactivation
+        inst_->stopPulse();
+        inst_->stopSignal(true);
+    }
     return AudioEffect::setActive(state);
 }
 
@@ -179,7 +183,10 @@ tresult PLUGIN_API ProbeProcessor::process(Vst::ProcessData& data) {
         }
         const double now = monoNow();
         // §5.11: test impulses only on an explicit `pulse` request; the ring then gets what really goes out
-        if (inst_->renderPulse(out.channelBuffers32, out.numChannels, n, tr, sampleRate_, now)) {
+        // §5.12 / §5.11: test signals and impulses only on an explicit request
+        const bool sig = inst_->renderSignal(out.channelBuffers32, out.numChannels, n, tr, pos, sampleRate_, now);
+        const bool pul = inst_->renderPulse(out.channelBuffers32, out.numChannels, n, tr, sampleRate_, now);
+        if (sig || pul) {
             out.silenceFlags = 0;
             l = out.channelBuffers32[0];
             r = out.numChannels > 1 ? out.channelBuffers32[1] : nullptr;
