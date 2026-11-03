@@ -11,7 +11,7 @@ Tested in Live 12.4.16 with Reference/Loudline Probe 0.1.3.
 - `events` pushed by Live listeners (song, tracks, mixer, every device parameter).
 - New: `abx` (level-matched A/B), `gainstage` (VU and dBu, hardware inputs), `phase`, `explain` (+ `snapshot --measure`), `refcompare`, `check`, `fingerprint`, `recall` (SessionRecall).
 - Fixes: snapshot diff/restore recognise devices by name and order, not position (a device insertion no longer looks like removals); Utility parameter names of Live 12.
-- Protocol: `signal` (§5.12), `thd` (§5.13, requested).
+- Protocol: `signal` (§5.12), `thd` (§5.13). `fingerprint` reports THD+N and harmonics with probes 0.1.4.
 
 ## 0.1.0 (unreleased, 2026-11-03)
 

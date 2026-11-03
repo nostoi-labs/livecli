@@ -111,6 +111,9 @@ def c_fingerprint(a):
     print("  noise floor %.1f dBFS RMS, THD+N %s" % (
         fp["noise_rms_db"] or -150, "%.3f %%" % fp["thd_n_pct"] if fp.get("thd_n_pct") is not None else
         "n/a (needs probes with 'thd')"))
+    hs = fp.get("harmonics_db") or []
+    if any(h is not None for h in hs):
+        print("  harmonics (dBc): " + ", ".join("H%d %.0f" % (k + 2, h) for k, h in enumerate(hs[:5]) if h is not None))
     print("  response: " + ("flat within 0.5 dB" if not regions else
           "; ".join("%+.1f dB at %s Hz" % (r["db"], P.fmt_hz(r["at"])) for r in regions)))
     if cmp_ is not None:
