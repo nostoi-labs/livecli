@@ -209,7 +209,7 @@
     "maximizer",
     "mastering"
    ],
-   "notes": "Waves L2 measured light at 32 samples on Vinci's M2 Pro"
+   "notes": "Waves L2 measured very light at 32 samples (M2 Pro)"
   },
   {
    "match": "Waves / DeEsser|Sibilance|Pro-DS|RDeEsser|DeBreath",
@@ -296,7 +296,7 @@
     "imager"
    ],
    "emulates": "iZotope Ozone",
-   "notes": "IRC maximizer modes use look-ahead: crackles at low buffers on Vinci's M2 Pro, use IRC LL or a light limiter while tracking"
+   "notes": "IRC maximizer modes use look-ahead: crackles at low buffers (measured on an M2 Pro), use IRC LL or a light limiter while tracking"
   },
   {
    "match": "Tonal Balance|SPAN|PAZ- Analyzer|PAZ- Meters|PAZ- Frequency|PAZ- Position|VU Meter|Spectrum|Loudline|Key Detector|Tuner",
