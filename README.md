@@ -50,7 +50,8 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 - **Scenes and clips:** `scene ...`, `clip ...`, `set-notes`, `clip-info`, `clip-set` (launch mode and quantization, legato, markers, loop, warp mode, gain, pitch...), `clip-edit` (quantize, transpose, velocity, crop, duplicate-loop), `warp-markers`, `envelope` / `envelope-set` / `envelope-clear` (clip automation), `arr-add` (copy a session clip, an audio file or a new MIDI clip into the arrangement). `@N` addresses arrangement clips (`live clip delete t3 @2`).
 - **Browser and plugins:** `search`, `browse`, `plugins` (inventory by category and style, see below)
 - **Audio:** `bounce <track|master> <start-bar> <bars>` (records a track's output or the master into a new audio track, in real time, with Live's punch in/out: the API has no export, this is the next best thing; prints the file and where the region starts in it), `capture` (optional, see below)
-- **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `probe-reset`, `probe-label`
+- **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `sync`, `probe-reset`, `probe-label`
+- **Timing:** `grid <track> [bars] [start-bar] [--grid 1/8]` records a track (bounce) and measures where its transients fall against Live's grid; `sync` does the same live with probes (`onsets`). See *Track Delay* below.
 - **Safety net:** `snapshot [name]` saves every mixer, device and chain value; `diff` shows what changed since (or between two snapshots); `restore <name> [filter]` puts values back, in one undo step.
 - **View and offline:** `show` (bring a track, device or clip into view for the user), `view` (Session, Arranger, Detail/Clip...), `als <file.als>` (read a set without opening it).
 - **Other:** `inspect` (what Live's API offers on the song, a track, mixer, device, parameter, clip or scene: properties with values and methods; read-only), `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
@@ -94,6 +95,16 @@ Write your own probe in any language. If it speaks the protocol, `live` will use
 `live latency <track> <device>` puts a probe before and after a device (a plugin, or an External Audio Effect with your outboard), measures the real delay on the music while it plays, and compares it with the latency Live assumes for that device. For a hardware insert it tells you how much to add to or remove from **Hardware Latency**: Live's API does not expose that setting, so you change it by hand.
 
 `probe-add` loads the plugin set in config (`probe_plugin`, default "Loudline Probe"), gives it a free **Probe ID** through its parameter, and waits until it reports. That ID is how the CLI ties a probe to a device position in Live, even when two probes sit on the same track.
+
+## Track Delay for devices with their own sequencer
+
+Overbridge devices and hardware synced to MIDI clock play from their own sequencer: Live compensates only the latency the plugin *declares*. If the real one differs, the track is early or late and you fix it with Track Delay (Live's API cannot set it). `live grid` measures it on the audio:
+
+1. Calibrate once with a dry sound from the device's own sequencer (its metronome, or a kick on the grid): the latency belongs to the path (device, USB, buffers), not to the sound, so the value also holds for pads and effects.
+2. `live grid <track>` gives the median offset from the grid; subtract the offset of a reference sequenced by Live (the detector's attack bias, e.g. +1.4 ms for a Drift click). The difference, with the sign flipped, is the Track Delay.
+3. Re-measure after setting it.
+
+Tested blind in Live 12.4.16: a hidden 21 ms delay on a click track measured as 21.0 ms; after Track Delay -21 ms the track was back on the reference within 0.01 ms.
 
 ## Config
 
