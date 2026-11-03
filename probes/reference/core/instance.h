@@ -144,6 +144,18 @@ public:
     SignalStatus signalStatus() const;
     bool generating() const { return sigActiveOut_.load(std::memory_order_relaxed); }
 
+    // ---- recording for `thd` (stereo, only while a request waits) ----
+    /// Server thread: record blocks that start in [t0, t1). False if a recording is already running.
+    bool armRecord(double t0, double t1, double sampleRateGuess);
+    struct Recording {
+        std::vector<float> l, r;
+        int channels = 2;
+        double sampleRate = 0;
+        bool done = false;   // the analysis passed t1
+    };
+    /// Server thread: the recording so far (`done` once complete); `release` frees it.
+    Recording takeRecording(bool release);
+
     // ---- onsets (only while a client asks) ----
     /// Server thread: detect onsets until `until` (server clock), at least down to `thresholdDb`.
     void armOnsets(double until, double thresholdDb);
@@ -257,6 +269,13 @@ private:
     uint64_t capWritten_ = 0, capRunStart_ = 0, capDropped_ = 0;
     size_t capBlockHead_ = 0, capBlockCount_ = 0;
     double capUntil_ = -1, capRate_ = 0;
+
+    // recording (guarded by m_)
+    bool recArmed_ = false;
+    double recT0_ = 0, recT1_ = 0;
+    std::vector<float> recL_, recR_;
+    int recChannels_ = 2;
+    double recRate_ = 0;
 
     // onsets (guarded by m_)
     OnsetDetector onsetDet_;

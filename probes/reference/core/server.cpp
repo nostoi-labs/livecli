@@ -20,6 +20,7 @@
 #include <map>
 
 #include "delay.h"
+#include "thd.h"
 #include "engine.h"
 #include "hub.h"
 
@@ -215,9 +216,81 @@ bool runOnsets(const PendingOnsets& p, double now, std::string& out) {
     return true;
 }
 
+void writeThd(JWriter& w, const ThdResult& t) {
+    auto db = [&](const char* k, double v) { w.key(k); if (std::isfinite(v) && v > -300) w.number(v, 2); else w.null(); };
+    w.key("freq").number(t.freq, 3);
+    db("fundamental_db", t.fundamentalDb);
+    w.key("thd_pct").number(t.thdPct, 5);
+    db("thd_db", t.thdDb);
+    w.key("thd_n_pct").number(t.thdNPct, 5);
+    db("thd_n_db", t.thdNDb);
+    db("sinad_db", -t.thdNDb);
+    db("noise_db", t.noiseDb);
+    db("snr_db", t.snrDb);
+    w.key("harmonics_db").beginArray();
+    for (double h : t.harmonicsDb) { if (std::isfinite(h) && h > -300) w.number(h, 2); else w.null(); }
+    w.endArray();
+    w.key("clipping").boolean(t.clipping);
+}
+
+/// Answers a pending thd request once its recording is complete: true when `out` holds the line.
+bool runThd(const PendingThd& p, double now, std::string& out) {
+    auto inst = Hub::get().findUid(p.uid);
+    JWriter w;
+    w.beginObject();
+    auto head = [&](bool ok) { w.key("ok").boolean(ok); if (!p.ridJson.empty()) w.key("rid").raw(p.ridJson); };
+    auto err = [&](const std::string& code, const std::string& msg) {
+        head(false);
+        w.key("error").str(msg);
+        w.key("code").str(code);
+        w.endObject();
+        out = w.take();
+        return true;
+    };
+    if (!inst) return err("not_found", "instance removed while recording");
+    if (!inst->takeRecording(false).done && now < p.deadline) return false;
+    Instance::Recording rec = inst->takeRecording(true);
+    if (rec.l.empty()) return err("busy", "no audio recorded (is the track processed?)");
+    std::vector<ThdResult> ch;
+    ch.push_back(measureThd(rec.l.data(), rec.l.size(), rec.sampleRate, p.freq));
+    if (rec.channels > 1) ch.push_back(measureThd(rec.r.data(), rec.r.size(), rec.sampleRate, p.freq));
+    // the worst channel goes on top (the chain is as good as its worst side)
+    size_t worst = 0;
+    for (size_t c = 0; c < ch.size(); c++) {
+        if (!ch[c].ok) return err(ch[c].code, ch.size() > 1 ? std::string(c ? "right: " : "left: ") + ch[c].error : ch[c].error);
+        if (ch[c].thdNPct > ch[worst].thdNPct) worst = c;
+    }
+    head(true);
+    w.key("uid").str(p.uid);
+    w.key("sample_rate").number(rec.sampleRate, 1);
+    w.key("seconds").number(rec.l.size() / rec.sampleRate, 3);
+    w.key("fft_size").integer(ch[worst].fftSize);
+    w.key("frames").integer(ch[worst].frames);
+    w.key("channel").integer((long long)worst);
+    writeThd(w, ch[worst]);
+    w.key("channels").beginArray();
+    for (auto& c : ch) { w.beginObject(); writeThd(w, c); w.endObject(); }
+    w.endArray();
+    w.endObject();
+    out = w.take();
+    return true;
+}
+
 }  // namespace
 
 void Protocol::duePending(Session& s, double now, std::string& out) {
+    for (size_t i = 0; i < s.pendingThd.size();) {
+        PendingThd& p = s.pendingThd[i];
+        std::string line;
+        if (now >= p.due && runThd(p, now, line)) {
+            out += line;
+            out += '\n';
+            s.pendingThd.erase(s.pendingThd.begin() + (long)i);
+            continue;
+        }
+        if (now >= p.due) p.due = now + 0.1;
+        i++;
+    }
     for (size_t i = 0; i < s.pendingOnsets.size();) {
         PendingOnsets& p = s.pendingOnsets[i];
         std::string line;
@@ -479,6 +552,28 @@ std::string Protocol::handle(const std::string& line, Session& s, double now) {
         if (q.seed) r.w.key("seed").integer((long long)q.seed);
         return r.done();
     }
+    if (cmd == "thd") {
+        if (!hasCap("thd")) return error(rid, "unsupported", "thd is not supported");
+        auto inst = resolve(req, rid, err);
+        if (!inst) return err;
+        if (now - inst->lastAudioT() > 1.0) return error(rid, "busy", "no audio processed in the last second");
+        const double sr = inst->identity().sampleRate;
+        PendingThd p;
+        p.ridJson = jsonOf(rid);
+        p.uid = inst->uid;
+        p.freq = numberOr(req, "freq", 0, 0, 1e6);
+        if (p.freq > 0 && (p.freq < 20 || p.freq > 0.45 * sr))
+            return error(rid, "bad_request", "freq must be 20 Hz … 0.45 × sample rate");
+        // at least one FFT frame (65536 samples at 48 kHz = 1.37 s) plus margin; at most 10 s
+        const double minS = thdFftSize(sr) / sr + 0.05;
+        const double sec = std::max(minS, numberOr(req, "seconds", 2, 0.5, 10));
+        p.t1 = now + sec;
+        p.due = p.t1 + 0.1;
+        p.deadline = p.t1 + 1.5;
+        if (!inst->armRecord(now, p.t1, sr)) return error(rid, "busy", "a thd measurement is already running on this probe");
+        s.pendingThd.push_back(p);
+        return std::string();
+    }
     if (cmd == "onsets") {
         if (!hasCap("onsets")) return error(rid, "unsupported", "onsets is not supported");
         auto inst = resolve(req, rid, err);
@@ -591,6 +686,10 @@ void Protocol::dueEvents(Session& s, double now, std::string& out) {
 int Protocol::msUntilDue(const Session& s, double now, int cap) {
     int best = cap;
     for (auto& p : s.pending) {
+        int ms = (int)std::ceil((p.due - now) * 1000.0);
+        if (ms < best) best = ms < 0 ? 0 : ms;
+    }
+    for (auto& p : s.pendingThd) {
         int ms = (int)std::ceil((p.due - now) * 1000.0);
         if (ms < best) best = ms < 0 ? 0 : ms;
     }

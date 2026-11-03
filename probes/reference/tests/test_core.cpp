@@ -13,6 +13,7 @@
 #include "reference_engine.h"
 #include "ring.h"
 #include "server.h"
+#include "thd.h"
 
 using namespace liveprobe;
 
@@ -724,6 +725,124 @@ static void testSignal() {
     hub.remove(a);
 }
 
+// ---- thd: sine with known harmonics and noise
+static std::vector<float> toneWith(double sr, double f, double peakDb, double h2Dbc, double h3Dbc, double noiseRmsDb, double seconds,
+                                   unsigned seed, double phase0 = 0.3) {
+    const size_t n = (size_t)(seconds * sr);
+    std::vector<float> x(n);
+    const double a = std::pow(10, peakDb / 20), a2 = a * std::pow(10, h2Dbc / 20), a3 = a * std::pow(10, h3Dbc / 20);
+    const double nr = noiseRmsDb > -300 ? std::pow(10, noiseRmsDb / 20) : 0;
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> g(0, 1);
+    for (size_t i = 0; i < n; i++) {
+        const double t = i / sr;
+        double v = a * std::sin(2 * M_PI * f * t + phase0);
+        if (h2Dbc > -300) v += a2 * std::sin(2 * M_PI * 2 * f * t + 1.1);
+        if (h3Dbc > -300) v += a3 * std::sin(2 * M_PI * 3 * f * t + 2.2);
+        if (nr > 0) v += nr * g(rng);
+        x[i] = (float)v;
+    }
+    return x;
+}
+
+static void testThd() {
+    // a clean float sine: the numerical floor
+    std::vector<float> x = toneWith(48000, 1000, -20, -400, -400, -400, 2, 1);
+    ThdResult r = measureThd(x.data(), x.size(), 48000, 1000);
+    printf("  pure 1 kHz -20 dBFS: f %.4f Hz, fundamental %.3f dBFS, THD %.1f dB, THD+N %.1f dB, noise %.1f dBFS\n", r.freq,
+           r.fundamentalDb, r.thdDb, r.thdNDb, r.noiseDb);
+    CHECK(r.ok && r.thdDb < -120 && r.thdNDb < -120);
+    NEAR(r.fundamentalDb, -20.0, 0.01);
+    NEAR(r.freq, 1000.0, 0.01);
+
+    // H2 -40 dBc + H3 -60 dBc: THD = sqrt(1e-4 + 1e-6) = 1.00499 % = -39.957 dB, at several frequencies and rates
+    struct C { double sr, f; } cases[] = {{48000, 1000}, {48000, 997.3}, {44100, 1000}, {44100, 61.7}, {96000, 1000}, {96000, 5123.4},
+                                          {48000, 6000}};
+    for (auto& c : cases) {
+        x = toneWith(c.sr, c.f, -12, -40, -60, -400, 2, 2);
+        r = measureThd(x.data(), x.size(), c.sr, 0);  // no hint: detect the fundamental
+        printf("  %5.0f Hz @ %3.0f k: f %.3f, THD %.4f %% (%.3f dB), H2 %.2f, H3 %.2f, H4 %.1f dBc, THD+N %.4f %%\n", c.f, c.sr / 1000,
+               r.freq, r.thdPct, r.thdDb, r.harmonicsDb[0], r.harmonicsDb[1], r.harmonicsDb[2], r.thdNPct);
+        CHECK(r.ok);
+        NEAR(r.freq, c.f, 0.02);
+        NEAR(r.thdPct, 1.00499, 0.002);
+        NEAR(r.thdDb, -39.957, 0.02);
+        NEAR(r.harmonicsDb[0], -40.0, 0.02);
+        NEAR(r.harmonicsDb[1], -60.0, 0.05);
+        NEAR(r.fundamentalDb, -12.0, 0.01);
+    }
+    // harmonics above 20 kHz are left out: 6 kHz has H2, H3 and nothing from H4 on
+    CHECK(std::isnan(r.harmonicsDb[2]));
+
+    // known noise: -20 dBFS sine + white noise -80 dBFS RMS → THD+N = noise in 20 Hz…20 kHz outside the notch
+    x = toneWith(48000, 1000, -20, -400, -400, -80, 3, 3);
+    r = measureThd(x.data(), x.size(), 48000, 1000);
+    const double bw = (20000.0 - 20.0) - (1000 * M_SQRT2 - 1000 / M_SQRT2);  // Hz of band outside the notch
+    const double expectN = 10 * std::log10(1e-8 * bw / 24000.0 / (0.01 / 2));
+    printf("  1 kHz -20 dBFS + noise -80 dBFS RMS: THD+N %.2f dB (expected %.2f), noise %.2f dBFS, SNR %.1f dB\n", r.thdNDb, expectN,
+           r.noiseDb, r.snrDb);
+    NEAR(r.thdNDb, expectN, 0.3);
+
+    // repeatability: 10 runs, random phase and noise, H2 at -50 dBc
+    double lo = 1e9, hi = -1e9;
+    for (unsigned k = 0; k < 10; k++) {
+        x = toneWith(48000, 1000, -20, -50, -400, -100, 2, 100 + k, 0.7 * k);
+        r = measureThd(x.data(), x.size(), 48000, 1000);
+        lo = std::min(lo, r.thdPct);
+        hi = std::max(hi, r.thdPct);
+    }
+    printf("  repeatability, 10 runs (H2 -50 dBc = 0.3162 %%): THD %.5f … %.5f %% (spread %.3f %% of the value)\n", lo, hi, 100 * (hi - lo) / lo);
+    CHECK((hi - lo) / lo < 0.01);
+
+    // refusals
+    std::vector<float> z(96000, 0.f);
+    r = measureThd(z.data(), z.size(), 48000, 1000);
+    CHECK(!r.ok && r.code == "busy");
+    x = toneWith(48000, 1000, -400, -400, -400, -20, 2, 4);  // noise only
+    r = measureThd(x.data(), x.size(), 48000, 1000);
+    printf("  noise only: %s\n", r.error.c_str());
+    CHECK(!r.ok && r.code == "busy");
+    x = toneWith(48000, 1000, -20, -400, -400, -400, 0.5, 5);
+    r = measureThd(x.data(), x.size(), 48000, 1000);
+    CHECK(!r.ok && r.code == "busy");  // shorter than one frame
+    x = toneWith(48000, 1000, -20, -400, -400, -400, 2, 6);
+    r = measureThd(x.data(), x.size(), 48000, 5);
+    CHECK(!r.ok && r.code == "bad_request");
+    x = toneWith(48000, 1000, 0.5, -400, -400, -400, 2, 7);  // over full scale
+    r = measureThd(x.data(), x.size(), 48000, 1000);
+    CHECK(r.clipping);
+
+    // protocol path: request, recording by the analysis thread, deferred answer
+    Hub& hub = Hub::get();
+    auto a = hub.add();
+    a->setFormat(2, 48000);
+    Session s;
+    const double t0 = monoNow();
+    std::vector<float> l = toneWith(48000, 440, -20, -46, -400, -400, 3, 8), rr = toneWith(48000, 440, -20, -60, -400, -400, 3, 9);
+    a->pushAudio(l.data(), rr.data(), 64, 48000, 0, t0 - 0.01);  // audio seen in the last second
+    a->analyze();
+    std::string first = Protocol::handle(R"({"cmd":"thd","rid":5,"uid":")" + a->uid + R"(","freq":440,"seconds":2})", s, t0);
+    CHECK(first.empty() && s.pendingThd.size() == 1);
+    for (size_t done = 0; done + 480 <= l.size(); done += 480) {
+        a->pushAudio(l.data() + done, rr.data() + done, 480, 48000, (int64_t)done, t0 + 0.001 + done / 48000.0);
+        if ((done / 480) % 16 == 0) a->analyze();
+    }
+    a->analyze();
+    std::string out;
+    Protocol::duePending(s, t0 + 2.2, out);
+    JValue v = parse(out.empty() ? "{}" : out.substr(0, out.find('\n')));
+    printf("  thd command: ok %d, freq %.2f, THD %.4f %% (worst = channel %.0f), left H2 %.2f dBc, right H2 %.2f dBc\n",
+           v.get("ok") && v.get("ok")->b, num(v.get("freq")), num(v.get("thd_pct")), num(v.get("channel")),
+           v.get("channels") ? num(&v.get("channels")->arr[0].get("harmonics_db")->arr[0]) : NAN,
+           v.get("channels") ? num(&v.get("channels")->arr[1].get("harmonics_db")->arr[0]) : NAN);
+    CHECK(v.get("ok") && v.get("ok")->b && num(v.get("rid")) == 5 && num(v.get("channel")) == 0);
+    NEAR(num(v.get("thd_pct")), 0.5012, 0.002);  // H2 -46 dBc
+    NEAR(num(v.get("fundamental_db")), -20.0, 0.02);
+    v = call(s, R"({"cmd":"thd","uid":")" + a->uid + R"(","freq":5})", t0 + 2.3);
+    CHECK(v.get("code") && v.get("code")->str == "bad_request");
+    hub.remove(a);
+}
+
 static void testRing() {
     AudioRing ring(1024, 16);
     std::vector<float> a(300), b(300), l(AudioRing::kMaxChunk), r(AudioRing::kMaxChunk);
@@ -915,6 +1034,7 @@ int main() {
     testOnsets();
     testPulse();
     testSignal();
+    testThd();
     testRing();
     testSnapshot();
     testCommands();

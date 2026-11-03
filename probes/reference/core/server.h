@@ -37,12 +37,19 @@ struct PendingOnsets {
     double t0 = 0, t1 = 0, thresholdDb = -50, deadline = 0, due = 0;
 };
 
+/// A `thd` request recording until `t1`.
+struct PendingThd {
+    std::string ridJson, uid;
+    double freq = 0, t1 = 0, deadline = 0, due = 0;
+};
+
 /// Per-connection state.
 struct Session {
     bool events = false;  // receives instance_added/removed/changed
     std::vector<Subscription> subs;
     std::vector<PendingDelay> pending;
     std::vector<PendingOnsets> pendingOnsets;
+    std::vector<PendingThd> pendingThd;
 };
 
 class Protocol {

@@ -146,6 +146,14 @@ int Instance::analyze() {
                 }
             }
         }
+        if (recArmed_ && bi.t >= recT0_ && bi.t < recT1_) {
+            const size_t room = recL_.capacity() - recL_.size();
+            const size_t k = std::min(room, (size_t)bi.frames);
+            recL_.insert(recL_.end(), bufL_.data(), bufL_.data() + k);  // capacity reserved: no allocation
+            recR_.insert(recR_.end(), bufR_.data(), bufR_.data() + k);
+            recChannels_ = bi.channels;
+            recRate_ = bi.sampleRate;
+        }
         analyzedT_ = bi.t + bi.frames / bi.sampleRate;
         int off = 0;
         while (off < bi.frames) {
@@ -815,6 +823,38 @@ bool Instance::renderSignal(float* const* out, int channels, int n, const Transp
     sigElapsed_.store(gDone_ / sr, std::memory_order_relaxed);
     if (gDone_ >= gTotal_) gActive_ = false;
     return true;
+}
+
+bool Instance::armRecord(double t0, double t1, double srGuess) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (recArmed_) return false;
+    const double sr = sr_ > 0 ? sr_ : srGuess;
+    const size_t cap = (size_t)((t1 - t0 + 0.2) * sr) + 8192;
+    recL_.clear();
+    recR_.clear();
+    recL_.reserve(cap);
+    recR_.reserve(cap);
+    recT0_ = t0;
+    recT1_ = t1;
+    recRate_ = sr;
+    recArmed_ = true;
+    return true;
+}
+
+Instance::Recording Instance::takeRecording(bool release) {
+    std::lock_guard<std::mutex> lk(m_);
+    Recording r;
+    r.done = analyzedT_ >= recT1_;
+    r.channels = recChannels_;
+    r.sampleRate = recRate_;
+    if (release) {
+        r.l.swap(recL_);
+        r.r.swap(recR_);
+        recArmed_ = false;
+        std::vector<float>().swap(recL_);
+        std::vector<float>().swap(recR_);
+    }
+    return r;
 }
 
 void Instance::armOnsets(double until, double thresholdDb) {

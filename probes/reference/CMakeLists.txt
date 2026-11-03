@@ -13,7 +13,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "")
 endif()
 
-project(reference-probe VERSION 0.1.3 LANGUAGES C CXX)
+project(reference-probe VERSION 0.1.4 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -36,6 +36,7 @@ add_library(liveprobe_core STATIC
     core/server.cpp
     core/delay.cpp
     core/onsets.cpp
+    core/thd.cpp
 )
 target_include_directories(liveprobe_core PUBLIC core)
 find_package(Threads REQUIRED)

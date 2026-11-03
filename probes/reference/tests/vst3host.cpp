@@ -9,6 +9,7 @@
 //   kind:   sine:<hz>:<dBFS> | sinel:<hz>:<dBFS> (left only) | noise:<dBFS> | anti:<dBFS> | silence
 //           | eqnoise:<dBFS>:<hz>:<gain dB> (the same noise as `noise`, through an RBJ peaking EQ, Q 1)
 //           | dnoise:<dBFS>:<ms> (the same noise as `noise`, delayed by <ms>; negative <ms>: also inverted)
+//           | hsine:<hz>:<dBFS>:<H2 dBc>:<H3 dBc> (a sine with two harmonics, for thd)
 //           | clicks:<dBFS>:<ms> (a click on every 1/16 of the host tempo, <ms> late: 2 kHz cosine burst, 5 ms decay)
 //   environment: PROBE_HOST_TEMPO (bpm, default 120), PROBE_HOST_TRANSPORT = playing (default) | stopped |
 //                nomusic (no song position) | loop (cycle over the first 4 quarter notes, wrapping inside blocks)
@@ -49,6 +50,7 @@ struct Signal {
     std::mt19937 rng{1234};
     std::vector<float> dl, dr;  // dnoise delay lines
     long clickPos = 0;
+    double h2 = -400, h3 = -400;
     double tempo = 120;
     size_t dpos = 0;
     // peaking EQ state (direct form I, per channel)
@@ -86,6 +88,11 @@ struct Signal {
                 float sgn = hz < 0 ? -1.f : 1.f;
                 x = sgn * dl[rd]; y = sgn * dr[rd];
                 dpos = rd;
+            } else if (kind == "hsine") {
+                x = y = (float)(a * (std::sin(phase) + std::pow(10.0, h2 / 20) * std::sin(2 * phase + 1.1) +
+                                     std::pow(10.0, h3 / 20) * std::sin(3 * phase + 2.2)));
+                phase += 2 * M_PI * hz / sr;
+                if (phase > 2 * M_PI) phase -= 2 * M_PI;
             } else if (kind == "clicks") {
                 // sample index n since the start; 1/16 grid of `tempo`, clicks `hz` ms late
                 const double grid = sr * 60.0 / tempo / 4.0;
@@ -123,6 +130,9 @@ static Signal parseSignal(std::string s) {
     g.kind = p[0];
     if ((g.kind == "sine" || g.kind == "sinel") && p.size() >= 3) { g.hz = atof(p[1].c_str()); g.db = atof(p[2].c_str()); }
     else if ((g.kind == "noise" || g.kind == "anti") && p.size() >= 2) g.db = atof(p[1].c_str());
+    else if (g.kind == "hsine" && p.size() >= 5) {
+        g.hz = atof(p[1].c_str()); g.db = atof(p[2].c_str()); g.h2 = atof(p[3].c_str()); g.h3 = atof(p[4].c_str());
+    }
     else if (g.kind == "clicks" && p.size() >= 3) { g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); }
     else if (g.kind == "dnoise" && p.size() >= 3) { g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); }
     else if (g.kind == "eqnoise" && p.size() >= 4) {
