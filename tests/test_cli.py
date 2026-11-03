@@ -279,6 +279,19 @@ class LiveCommands(unittest.TestCase):
         self.assertFalse(SONG.record_mode)
         self.assertEqual(len(SONG.tracks), n)          # the empty bounce track was removed
 
+    def test_clip_set_all(self):
+        run("clip", "new", "synth", "2", "4")
+        run("clip", "new", "synth", "3", "4")
+        code, r = run_json("clip-set-all", "synth", "--session", "legato=on")
+        self.assertGreaterEqual(r["changed"], 2)
+        self.assertTrue(SONG.tracks[2].clip_slots[2].clip.legato and SONG.tracks[2].clip_slots[3].clip.legato)
+        code, r = run_json("clip-set-all", "all", "--audio", "warping=off")
+        audio = [c for t in SONG.tracks for c in t.arrangement_clips if c.is_audio_clip]
+        self.assertEqual(r["changed"], len(audio))
+        self.assertTrue(all(c.warping is False for c in audio))
+        run("clip", "delete", "synth", "2")
+        run("clip", "delete", "synth", "3")
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 

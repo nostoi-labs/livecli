@@ -1219,14 +1219,37 @@ def _timing(r, grid):
 
 
 def _sync_ref_track():
-    """A temporary MIDI track with Drift blips on every quarter note, playing from the session."""
+    """Fallback reference: a temporary MIDI track with a short Drift click on every quarter note, from the session."""
     r = call("track_create", kind="midi", name="LiveCLI Sync Ref", index=-1)
     ref = r["ref"]
-    call("load", track=ref, path="instruments/Drift", timeout=30)
+    call("insert_device", track=ref, name="Drift", index=0)
+    ps = call("params", track=ref, device="0")["params"]
+    for name, text in (("Env 1 Decay", "30 ms"), ("Env 1 Release", "20 ms"), ("Env 1 Sustain", "0 %")):
+        p_ = next((x for x in ps if x["name"] == name), None)
+        if p_:
+            call("set_param", track=ref, device="0", param=p_["i"], text=text)
     call("clip_create", track=ref, slot=0, length=4.0)
-    call("set_notes", track=ref, slot=0, notes=[{"pitch": 84, "start": float(k), "duration": 0.05, "velocity": 127} for k in range(4)])
+    call("set_notes", track=ref, slot=0, notes=[{"pitch": 96, "start": float(k), "duration": 0.05, "velocity": 127} for k in range(4)])
     call("clip_fire", track=ref, slot=0)
     return ref
+
+
+def _pulse_ref(sec):
+    """Best reference: a temporary silent audio track where one probe emits impulses exactly on the quarter notes
+    (Live Probe Protocol 'pulse') and a second probe right after it measures them. Returns (track ref, pulser, detector)."""
+    r = call("track_create", kind="audio", name="LiveCLI Pulse Ref", index=-1)
+    ref = r["ref"]
+    call("set_routing", track=ref, side="input", type="No Input")
+    call("set_mixer", track=ref, what="volume", value=0.0)        # -inf: the clicks never reach the speakers
+    c_probe_add([ref, "pulse-src"])
+    c_probe_add([ref, "pulse-det"])
+    devs = track(ref)["devices"]
+    src = _find_probe_at(ref, devs[0]["path"])
+    det = _find_probe_at(ref, devs[1]["path"])
+    if not src or not det or not src[0].has("pulse"):
+        call("track_delete", track=ref)
+        return None
+    return ref, src, det
 
 
 @command("sync", "sync <track> [reference-track] [seconds] [--grid 1/16] [--probes A B] [--keep]", "timing of a track "
@@ -1255,12 +1278,18 @@ def c_sync(a):
         if not call("song")["playing"]:
             raise LiveError("start playback first (the devices must be playing in sync with Live)")
         t = track(args[0])
+        pulse = None
         if len(args) > 1:
             rt = track(args[1])
         else:
-            temp_ref = _sync_ref_track()
-            rt = track(temp_ref)
-            time.sleep(1.0)
+            pulse = _pulse_ref(sec)
+            if pulse:
+                temp_ref, src, pr = pulse
+                rt = track(temp_ref)
+            else:
+                temp_ref = _sync_ref_track()
+                rt = track(temp_ref)
+                time.sleep(1.0)
 
         def probe_at_end(tr):
             devs = track(tr["ref"])["devices"]
@@ -1272,10 +1301,17 @@ def c_sync(a):
             cleanup.append(tr["ref"])
             return _find_probe_at(tr["ref"], track(tr["ref"])["devices"][-1]["path"])
 
-        pt, pr = probe_at_end(t), probe_at_end(rt)
+        pt = probe_at_end(t)
+        if not pulse:
+            pr = probe_at_end(rt)
         if not pt or not pr:
             raise LiveError("could not place the probes at the end of the two tracks")
-        names = (t["name"], rt["name"] + (" (temporary, Drift on quarters)" if temp_ref else ""))
+        names = (t["name"], rt["name"] + (" (temporary: probe impulses on quarters)" if pulse else
+                                          " (temporary, Drift click on quarters)" if temp_ref else ""))
+        if pulse:
+            r_ = src[0].request({"cmd": "pulse", "uid": src[1]["uid"], "every": 1.0, "offset": 0.0,
+                                 "seconds": min(10.0, sec + 2.0), "level_db": -20, "mode": "replace"})
+            time.sleep(0.3)
     try:
         if not pt[0].has("onsets") or not pr[0].has("onsets"):
             raise LiveError("the probes don't support 'onsets' (needs Reference/Loudline Probe 0.1.2+)")
@@ -1525,6 +1561,56 @@ def c_clip_set(a):
         kw["pitch_coarse"] = int(kw["pitch_coarse"])
     r = call("clip_set", track=track(a[0])["ref"], **dict(kw, **clip_ref(a[1])))
     out(r, "\n".join("  %-20s %s" % (k, v) for k, v in r.items() if v is not None))
+
+
+@command("clip-set-all", "clip-set-all <tracks|all> [--session|--arrangement] [--audio|--midi] [--name text] key=value...",
+         "change many clips at once (one undo step), e.g. after importing files: clip-set-all all --audio warping=off. "
+         "tracks: comma-separated (t3,t4 or names) or all", "clips")
+def c_clip_set_all(a):
+    need(a, 2, "clip-set-all <tracks|all> [filters] key=value...")
+    flags = {x for x in a if x.startswith("--")}
+    name_f = a[a.index("--name") + 1].lower() if "--name" in a else None
+    kv = [x for k, x in enumerate(a[1:], 1) if "=" in x and a[k - 1] != "--name"]
+    if not kv:
+        raise LiveError("nothing to set: give key=value (see 'live help clip-set')")
+    ts = tracks()
+    refs = [t["ref"] for t in ts if t["ref"][0] == "t"] if a[0] == "all" else [find_track(ts, q)["ref"] for q in a[0].split(",")]
+    where = ("session",) if "--session" in flags else ("arrangement",) if "--arrangement" in flags else ("session", "arrangement")
+    targets = []
+    for ref in refs:
+        if "session" in where:
+            targets += [(ref, {"slot": c["slot"]}, c) for c in call("clips", track=ref)]
+        if "arrangement" in where:
+            targets += [(ref, {"arr": c["arr"]}, c) for c in call("arrangement", track=ref)]
+    if "--audio" in flags:
+        targets = [x for x in targets if not x[2]["midi"]]
+    if "--midi" in flags:
+        targets = [x for x in targets if x[2]["midi"]]
+    if name_f:
+        targets = [x for x in targets if name_f in (x[2]["name"] or "").lower()]
+    if not targets:
+        return out({"changed": 0}, "no clips match")
+    call("undo_begin")
+    done, errors = 0, []
+    try:
+        for ref, cr, c in targets:
+            try:
+                kw = _kv(kv)
+                for k in ("looping", "muted", "legato", "warping", "ram_mode"):
+                    if k in kw:
+                        kw[k] = _bool(kw[k])
+                for k in ("loop_start", "loop_end", "start_marker", "end_marker", "velocity_amount", "pitch_fine"):
+                    if k in kw:
+                        kw[k] = float(kw[k])
+                if "pitch_coarse" in kw:
+                    kw["pitch_coarse"] = int(kw["pitch_coarse"])
+                call("clip_set", track=ref, **dict(kw, **cr))
+                done += 1
+            except LiveError as e:
+                errors.append("%s %s: %s" % (ref, c.get("name") or cr, e))
+    finally:
+        call("undo_end")
+    out({"changed": done, "errors": errors}, "changed %d clips%s" % (done, "".join("\n  error " + e for e in errors)))
 
 
 @command("clip-edit", "clip-edit <track> <slot|@arr> quantize [1/16] [amount%] | transpose <semitones> | velocity <percent> "
