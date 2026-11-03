@@ -49,7 +49,7 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 - **Racks:** `rack` (chains with their mixer, macros, variations, Drum Rack pads), `chain` (name, mute, solo, volume, pan of a chain), `chain-new`, `variation store|recall|delete|randomize`, `pad` (mute/solo a Drum Rack pad)
 - **Scenes and clips:** `scene ...`, `clip ...`, `set-notes`, `clip-info`, `clip-set` (launch mode and quantization, legato, markers, loop, warp mode, gain, pitch...), `clip-edit` (quantize, transpose, velocity, crop, duplicate-loop), `warp-markers`, `envelope` / `envelope-set` / `envelope-clear` (clip automation), `arr-add` (copy a session clip, an audio file or a new MIDI clip into the arrangement). `@N` addresses arrangement clips (`live clip delete t3 @2`).
 - **Browser and plugins:** `search`, `browse`, `plugins` (inventory by category and style, see below)
-- **Audio:** `capture` (optional, see below)
+- **Audio:** `bounce <track|master> <start-bar> <bars>` (records a track's output or the master into a new audio track, in real time, with Live's punch in/out: the API has no export, this is the next best thing; prints the file and where the region starts in it), `capture` (optional, see below)
 - **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `probe-reset`, `probe-label`
 - **Safety net:** `snapshot [name]` saves every mixer, device and chain value; `diff` shows what changed since (or between two snapshots); `restore <name> [filter]` puts values back, in one undo step.
 - **View and offline:** `show` (bring a track, device or clip into view for the user), `view` (Session, Arranger, Detail/Clip...), `als <file.als>` (read a set without opening it).
@@ -79,7 +79,7 @@ compressor (6)
   Universal Audio (UADx) / UADx Empirical Labs Distressor     ...  note: its 'Opt' detector mode gives an opto-like (LA-2A style) curve
 ```
 
-So an agent can answer "what would you put on this vocal for an LA-2A feel, and what are my options?" from the plugins the user actually owns. The catalog is a list of regex rules (category, styles, emulates, notes); anything it doesn't know shows as `uncategorized`, and the agent can still reason from the name. Pull requests with more plugins are welcome.
+So an agent can answer "what would you put on this vocal for an LA-2A feel, and what are my options?" from the plugins the user actually owns. The catalog is a list of regex rules (category, styles, emulates, notes); anything it doesn't know shows as `uncategorized`, and the agent can still reason from the name. Add your own plugins in `~/.config/live-cli/catalog.json` (same format): your rules come before the built-in ones. Pull requests with more plugins are welcome.
 
 ## Probes
 

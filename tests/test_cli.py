@@ -249,6 +249,19 @@ class LiveCommands(unittest.TestCase):
         self.assertEqual(names[("Loudline", "Loudline Probe")]["category"], "analyzer")
         self.assertEqual(names[("Live", "Utility")]["category"], "stereo")
 
+    def test_bounce_restores_state(self):
+        SONG.stop_playing()
+        SONG.loop, SONG.punch_in, SONG.punch_out = False, False, False
+        n = len(SONG.tracks)
+        code, r = run_json("bounce", "bass", "2", "2")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(SONG.tracks), n + 1)
+        self.assertEqual(SONG.tracks[-1].input_routing_type.display_name, "Bass")
+        self.assertEqual((SONG.loop, SONG.punch_in, SONG.punch_out, SONG.is_playing, SONG.record_mode),
+                         (False, False, False, False, False))
+        self.assertFalse(SONG.tracks[-1].arm)
+        run("track-delete", r["track"])
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 

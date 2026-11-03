@@ -729,6 +729,82 @@ def c_capture(a):
     out({"file": path, "seconds": sec}, path)
 
 
+# ================================================================== bounce (record inside Live)
+@command("bounce", "bounce <track|master> <start-bar> <bars> [name]", "record a track's output (Post Mixer) or the master "
+         "(Resampling) into a new audio track in the arrangement, in real time: Live's API has no export, this is the "
+         "next best thing. Prints the recorded file", "audio")
+def c_bounce(a):
+    need(a, 3, "bounce <track|master> <start-bar> <bars> [name]")
+    src_q, start_bar, bars = a[0], float(a[1]), float(a[2])
+    s_ = call("song")
+    if s_["playing"]:
+        raise LiveError("stop playback first")
+    ts = tracks()
+    if src_q.lower() in ("m", "master", "main"):
+        src_type, src_ch, src_name = "Resampling", None, "Master"
+    else:
+        t = find_track(ts, src_q)
+        if t["ref"][0] != "t":
+            raise LiveError("source must be a regular track or the master")
+        src_type, src_ch, src_name = t["name"], "Post Mixer", t["name"]
+    name = " ".join(a[3:]) or "Bounce %s" % src_name
+    n, d = [int(x) for x in s_["signature"].split("/")]
+    beats_per_bar = n * 4.0 / d
+    start, end = (start_bar - 1) * beats_per_bar, (start_bar - 1 + bars) * beats_per_bar
+    armed = [t["ref"] for t in ts if t.get("arm")]
+    new = call("track_create", kind="audio", name=name, index=-1)
+    ref = new["ref"]
+    old = {k: s_[k] for k in ("position", "loop", "loop_start", "loop_length", "punch_in", "punch_out")}
+    preroll = beats_per_bar
+    try:
+        call("set_routing", track=ref, side="input", type=src_type, channel=src_ch)
+        call("track_set", track=ref, monitor="off")
+    except LiveError:
+        call("track_delete", track=ref)      # don't leave an empty track behind
+        raise
+    try:
+        for r_ in armed:
+            call("track_set", track=r_, arm=False)
+        call("track_set", track=ref, arm=True)
+        # punch in/out on the loop region: Live itself records exactly from start to end
+        # (punch uses the loop brace; the loop switch stays off so playback doesn't jump back)
+        call("set_song", loop=False, loop_start=start, loop_length=end - start, punch_in=True, punch_out=True)
+        call("play")
+        call("jump", time=max(0.0, start - preroll))
+        call("record", on=True)
+        sec_per_beat = 60.0 / s_["tempo"]
+        deadline = time.time() + (end - start + preroll * 2) * sec_per_beat + 10
+        print("recording %s from bar %g for %g bars..." % (src_name, start_bar, bars), file=sys.stderr)
+        prev = None
+        while time.time() < deadline:
+            pos = call("song")["position"]
+            if end + 0.25 <= pos or (prev is not None and pos < prev - 0.5):    # past the end, or jumped back
+                break
+            prev = pos
+            time.sleep(0.1)
+    finally:
+        call("stop")
+        call("record", on=False)
+        call("track_set", track=ref, arm=False)
+        for r_ in armed:
+            call("track_set", track=r_, arm=True)
+        call("set_song", **old)
+    time.sleep(0.5)
+    clips = call("arrangement", track=ref)
+    info = {"track": ref, "name": name, "source": src_name, "start_bar": start_bar, "bars": bars, "clips": clips,
+            "file": clips[-1].get("file") if clips else None}
+    if len(clips) == 1:
+        c = call("clip_set", track=ref, arr=0)
+        spb = 60.0 / s_["tempo"]          # recorded at the song tempo: beats in the file = beats in the song
+        info["file_offset_s"] = round(c["start_marker"] * spb, 4)
+        info["duration_s"] = round((c["end_marker"] - c["start_marker"]) * spb, 4)
+    text = "bounced to %s (%s): %s" % (ref, name, info["file"] or "no clip recorded")
+    if "file_offset_s" in info:
+        text += "\n  the region is %.3f s long and starts %.3f s into the file (the rest is pre-roll): ffmpeg -ss %.3f -t %.3f" % (
+            info["duration_s"], info["file_offset_s"], info["file_offset_s"], info["duration_s"])
+    out(info, text)
+
+
 # ================================================================== probes
 def _probe_pairs():
     srvs = P.servers()
@@ -1711,6 +1787,9 @@ def plugin_inventory(refresh=False):
     except LiveError:
         items, source = _inventory_from_files()
     rules = json.load(open(CATALOG))["rules"]
+    user_cat = os.path.join(CONFIG_DIR, "catalog.json")
+    if os.path.exists(user_cat):          # the user's own rules come first
+        rules = json.load(open(user_cat)).get("rules", []) + rules
     for e in items:
         e.update(_classify(rules, e["vendor"], e["name"]))
     inv = {"time": time.strftime("%Y-%m-%d %H:%M"), "source": source, "plugins": items}

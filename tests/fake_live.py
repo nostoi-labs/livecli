@@ -241,7 +241,7 @@ class View:
 class Song:
     def __init__(self):
         self.tempo, self.signature_numerator, self.signature_denominator = 120.0, 4, 4
-        self.is_playing, self.current_song_time = False, 0.0
+        self._play_t0, self._pos = None, 0.0
         self.loop, self.loop_start, self.loop_length = False, 0.0, 16.0
         self.metronome = self.record_mode = self.session_record = self.arrangement_overdub = False
         self.punch_in = self.punch_out = False
@@ -258,7 +258,34 @@ class Song:
         self.cue_points = [Cue(0.0, "Start")]
         self.view = View()
 
-    # transport
+    # transport: while playing, the position advances 40 beats per second (fast, for tests)
+    @property
+    def current_song_time(self):
+        import time as _t
+        if getattr(self, "_play_t0", None) is not None:
+            return self._pos + (_t.time() - self._play_t0) * 40.0
+        return getattr(self, "_pos", 0.0)
+
+    @current_song_time.setter
+    def current_song_time(self, v):
+        import time as _t
+        self._pos = v
+        if getattr(self, "_play_t0", None) is not None:
+            self._play_t0 = _t.time()
+
+    @property
+    def is_playing(self):
+        return getattr(self, "_play_t0", None) is not None
+
+    @is_playing.setter
+    def is_playing(self, v):
+        import time as _t
+        if v and not self.is_playing:
+            self._play_t0 = _t.time()
+        elif not v and self.is_playing:
+            self._pos = self.current_song_time
+            self._play_t0 = None
+
     def start_playing(self):
         self.is_playing = True
 
@@ -303,6 +330,8 @@ class Song:
     # tracks
     def create_audio_track(self, i):
         t = Track("Audio")
+        t.available_input_routing_types = [Routing("Resampling")] + [Routing(x.name) for x in self.tracks] + [Routing("No Input")]
+        t.available_input_routing_channels = [Routing("Pre FX"), Routing("Post FX"), Routing("Post Mixer")]
         self.tracks.insert(i if i >= 0 else len(self.tracks), t)
 
     def create_midi_track(self, i):
