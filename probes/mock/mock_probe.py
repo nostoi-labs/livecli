@@ -148,7 +148,7 @@ class MockServer:
             c.append("history")
         if self.can_compare:
             c.append("compare")
-        c.append("onsets")
+        c += ["onsets", "delay", "signal", "pulse"]
         return c
 
     def handle(self, req, conn):
@@ -180,6 +180,18 @@ class MockServer:
                 return p2db(sum(db2p(h[t]["bands_mid"][k]) for t in ts) / len(ts))
             gain = [round(avg(hb, k) - avg(ha, k), 2) for k in range(31)] if ts else [None] * 31
             return {"seconds": len(ts), "centers": [round(c, 1) for c in CENTERS], "gain_db": gain}
+        if cmd == "delay":
+            # synthetic: vox post = vox pre delayed 10 ms; bass vs vox_eq: inverted polarity, 2 ms
+            a, b = self.get_inst(req["a"]), self.get_inst(req["b"])
+            pair = (a.shape, b.shape)
+            ms, pol, corr = {("vox", "vox_eq"): (10.0, 1, 0.98), ("bass", "vox_eq"): (2.0, -1, 0.8)}.get(pair, (0.0, 1, 0.2))
+            return {"a": a.uid, "b": b.uid, "delay_samples": int(round(ms * 48)), "delay_ms": ms, "correlation_peak": corr,
+                    "polarity": pol, "ambiguity": 0.1, "sample_rate": 48000.0, "seconds": float(req.get("seconds", 5)),
+                    "aligned": "block" if a.track == b.track else "clock"}
+        if cmd in ("signal", "pulse"):
+            i = self.get_inst(req.get("uid"))
+            return {"uid": i.uid, "until_t": round(time.monotonic() - self.t0 + float(req.get("seconds", 4)), 3),
+                    "level_db": min(-6.0, float(req.get("level_db", -20)))}
         if cmd == "onsets":
             # synthetic: one onset per 1/16 at 120 BPM, offset by the instance's timing (post = +10 ms, bass = +3 ms)
             i = self.get_inst(req.get("uid"), req.get("probe_id"))

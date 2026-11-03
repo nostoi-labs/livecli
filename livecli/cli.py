@@ -1897,11 +1897,18 @@ def _diff(old, new):
     return changed, added, removed
 
 
-@command("snapshot", "snapshot [name]", "save every mixer, device and chain value of the set (default name: time)", "other")
+@command("snapshot", "snapshot [name] [--measure [seconds]]", "save every mixer, device and chain value of the set "
+         "(default name: time); --measure also stores what every probe measures, for 'live explain'", "other")
 def c_snapshot(a):
     os.makedirs(SNAP_DIR, exist_ok=True)
-    name = a[0] if a else time.strftime("%Y%m%d-%H%M%S")
+    pos = [x for k, x in enumerate(a) if not x.startswith("--") and (k == 0 or a[k - 1] != "--measure")]
+    name = pos[0] if pos else time.strftime("%Y%m%d-%H%M%S")
     snap = _take()
+    if "--measure" in a:
+        k = a.index("--measure")
+        sec = float(a[k + 1]) if len(a) > k + 1 and a[k + 1].replace(".", "").isdigit() else 5.0
+        from . import cmd_mix
+        snap["measure"] = cmd_mix.measure_all_probes(sec)
     with open(_snap_path(name), "w") as fh:
         json.dump(snap, fh)
     out({"name": name, "values": len(snap["values"])}, "snapshot '%s': %d values" % (name, len(snap["values"])))
@@ -2245,7 +2252,7 @@ def load_extensions():
 
 
 def _load_modules():
-    from . import cmd_setup, cmd_midi, cmd_offline  # noqa: F401  (they register their commands)
+    from . import cmd_setup, cmd_midi, cmd_offline, cmd_mix  # noqa: F401  (they register their commands)
 
 
 def main(argv=None):

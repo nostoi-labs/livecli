@@ -15,7 +15,7 @@ import re
 
 import Live
 
-VERSION = 12
+VERSION = 13
 DEFERRED = object()
 
 
@@ -293,6 +293,11 @@ def c_song(cs, req):
             out[k] = getattr(s, k)
         except Exception:
             pass
+    try:
+        out["scale_intervals"] = [int(x) for x in s.scale_intervals]
+    except Exception:
+        pass
+    out["file_path"] = _safe(s, "file_path") or None
     return out
 
 

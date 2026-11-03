@@ -32,6 +32,7 @@ os.environ["LIVECLI_CONFIG_DIR"] = os.path.join(TMP, "config")
 os.environ["LIVEPROBES_DIR"] = os.path.join(TMP, "probes")
 
 import fake_live  # noqa: E402
+P_CENTERS = [20.0 * 2 ** (k / 3.0) for k in range(31)]
 from livecli import cli  # noqa: E402
 
 SONG, SRV = fake_live.serve(PORT)
@@ -448,6 +449,11 @@ class Probes(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertAlmostEqual(r["late_ms"], 10.0, delta=0.3)
         self.assertAlmostEqual(r["track_delay_ms"], -10.0, delta=0.3)
+
+    def test_refcompare_and_explain_math(self):
+        code, r = run_json("refcompare", "post", "pre", "1")
+        self.assertEqual(code, 0)
+        self.assertTrue(any(reg["db"] > 5 and 700 < reg["at"] < 1400 for reg in r["regions"]))   # the +6 dB bell
 
     def test_label_and_find(self):
         run("probe-label", "#3", "bass di")
