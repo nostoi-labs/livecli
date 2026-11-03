@@ -39,6 +39,29 @@ Requirements: macOS, Ableton Live 11.3 or later (tested on Live 12.4), Python 3.
 
 Live loads Remote Scripts at startup. After you change `commands.py`, run `live reload`: no restart is needed. After you change `__init__.py`, restart Live.
 
+## Install with an AI agent
+
+A user can simply tell their agent: *"I want to use LiveCLI: install it and add the skill."* This section is for that agent.
+
+**What the agent does (terminal):**
+1. Check the platform: macOS with Ableton Live 11.3 or later (12.x recommended), Python 3.9+.
+2. Get LiveCLI: `git clone https://github.com/<owner>/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`), or the package once it is published.
+3. `live setup`: copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
+4. Optional probes for measurements: install the Reference Probe or Loudline Probe package (VST3, notarized) from the Releases page.
+5. `live skill install` (Claude Code; `--dir <project>/.claude/skills/livecli` for a project skill). Next session the agent knows the commands.
+6. `live doctor` until every line is ✓, then `live ping`.
+
+**What only the user can do (ask for these, don't guess):**
+- In Live: **Settings > Link, Tempo & MIDI**, a free **Control Surface** slot: **LiveCLI**, Input and Output: None. If LiveCLI is not in the list, restart Live (it reads Remote Scripts at startup).
+- If probes were installed: **Settings > Plug-ins > Rescan** (Live must be closed while a probe is being replaced).
+- The administrator password if the probe installer asks for it, and any macOS permission prompt.
+
+**Rules for the agent once it works:**
+- Reading is free. Ask before changing the user's set; `live snapshot` before a series of changes.
+- Never change Live's audio preferences (device, buffer, sample rate) or the user's projects on disk.
+- When trying things, use new tracks of your own, not the user's tracks; delete them afterwards.
+- Run `live doctor` first whenever a command fails; error codes and hints say what to do.
+
 ## Commands
 
 `live help` lists everything; `live help <command>` shows one command. The groups are:
