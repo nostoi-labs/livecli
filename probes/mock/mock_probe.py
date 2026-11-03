@@ -73,7 +73,8 @@ class MockServer:
 
     # ------------------------------------------------------------- synthetic signal
     def base(self, t, shape):
-        wob = 1.5 * math.sin(t * 0.7) + random.gauss(0, 0.4)
+        # the same "music" for every instance at the same moment (like probes on one signal path)
+        wob = 1.5 * math.sin(t * 0.7) + random.Random(int(t * 10)).gauss(0, 0.4)
         if shape in ("vox", "vox_eq"):
             b = [-40 - 3 * abs(math.log2(c / 1500.0)) ** 1.6 + wob for c in CENTERS]
             b = [v if c > 90 else v - 30 for v, c in zip(b, CENTERS)]
