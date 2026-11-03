@@ -193,6 +193,23 @@ class LiveCommands(unittest.TestCase):
         code, sc = run_json("scenes")
         self.assertEqual(len(sc), 2)
 
+    def test_ab_impact_inspect(self):
+        code, r = run_json("ab", "vox", "eq", "b")
+        self.assertEqual(r["using"], "B")
+        run("ab", "vox", "eq", "a")
+        code, rows = run_json("impact", "3")
+        self.assertEqual(len(rows), 3)
+        code, r = run_json("inspect", "device", "vox", "eq")
+        self.assertEqual(r["type"], "Device")
+        self.assertIn("parameters", r["properties"])
+
+    def test_replace_is_one_undo_step(self):
+        n = getattr(SONG, "undo_steps", 0)
+        run("load", "m", "audio_effects/Utility")
+        run("replace", "m", "utility", "audio_effects/Utility")
+        self.assertEqual(SONG.undo_steps, n + 1)
+        run("delete", "m", "utility")
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 

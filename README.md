@@ -42,15 +42,15 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 
 `live help` lists everything; `live help <command>` shows one command. The groups are:
 
-- **Info:** `ping`, `song`, `cpu`, `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`
+- **Info:** `ping`, `song`, `cpu`, `impact` (CPU impact per track), `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`
 - **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`
 - **Tracks and mixer:** `track-new`, `track-delete`, `track-duplicate`, `track-rename`, `track-color`, `solo`, `mute`, `arm`, `monitor`, `volume`, `pan`, `send`
-- **Devices:** `set`, `on`, `off`, `load`, `delete`, `move`, `rename`, `replace`, `mode`
+- **Devices:** `set`, `on`, `off`, `ab` (Live 12 A/B compare), `load`, `delete`, `move`, `rename`, `replace`, `mode`. `devices` also shows the latency Live assumes for each device.
 - **Scenes and clips:** `scene ...`, `clip ...`, `set-notes`
 - **Browser:** `search`, `browse`
 - **Audio:** `capture` (optional, see below)
-- **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `probe-reset`, `probe-label`
-- **Other:** `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
+- **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `probe-reset`, `probe-label`
+- **Other:** `inspect` (what Live's API offers on the song, a track, mixer, device, parameter, clip or scene: properties with values and methods; read-only), `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
 - **Italian aliases:** `stato`, `tracce`, `parametri`, `imposta`, `accendi`/`spegni`, `carica`, `cancella`, `sposta`, `sostituisci`, `cerca`, `livelli`, `mandata`, `locatori`, `vai`, `modo`, `cattura`, `sonde`, `misura`, `confronta`, …
 
 References are short:
@@ -59,7 +59,8 @@ References are short:
 - **probe:** `#<probe id>`, a label, or the track name.
 
 ### Notes for agents
-- Read freely. Ask the user before changing their set: there is `live undo`, but hardware and ears are real.
+- Read freely. Ask the user before changing their set: there is `live undo`, but hardware and ears are real. `replace` and `mode` are grouped into a single undo step.
+- Not reachable from Live's API (Live 12.4): saving, opening or exporting the set, preferences (audio device, buffer, sample rate, driver error compensation), the Delay Compensation switch, track delay, the Hardware Latency of External Audio Effect, creating group tracks. Use `inspect` to check your Live version.
 - `live --json <command>` always returns JSON. Errors come back as `{"ok": false, "error": "..."}` with exit code 1.
 - `live meters` reads Live's own meters (0 to 1 scale, not dBFS). For real levels use probes.
 
@@ -72,6 +73,8 @@ A probe is a pass-through audio plugin that measures and publishes, following th
 - **Mock probe** (`probes/mock/mock_probe.py`): a fake server with synthetic signals, for developing clients without a DAW.
 
 Write your own probe in any language. If it speaks the protocol, `live` will use it.
+
+`live latency <track> <device>` puts a probe before and after a device (a plugin, or an External Audio Effect with your outboard), measures the real delay on the music while it plays, and compares it with the latency Live assumes for that device. For a hardware insert it tells you how much to add to or remove from **Hardware Latency**: Live's API does not expose that setting, so you change it by hand.
 
 `probe-add` loads the plugin set in config (`probe_plugin`, default "Loudline Probe"), gives it a free **Probe ID** through its parameter, and waits until it reports. That ID is how the CLI ties a probe to a device position in Live, even when two probes sit on the same track.
 

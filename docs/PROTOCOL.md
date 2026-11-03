@@ -93,7 +93,7 @@ If the server does not support `compare`, the client computes `gain_db` itself f
 
 ### 5.1 `hello`
 → `{"cmd":"hello"}`
-← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","reset","subscribe","label"]}`
+← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","reset","subscribe","label"]}`
 
 ### 5.2 `list`
 → `{"cmd":"list"}`
@@ -121,6 +121,17 @@ Also pushed to every subscriber: `{"event":"instance_added|instance_removed|inst
 
 ### 5.8 `set_label`
 → `{"cmd":"set_label","uid":"...","label":"pre soothe2"}`
+
+### 5.9 `delay` (optional, capability `delay`)
+→ `{"cmd":"delay","a":"<uid>","b":"<uid>","seconds":5,"max_lag_ms":1000}` (`a`/`b` may also be probe_id numbers; same server)
+← `{"ok":true,"a":"...","b":"...","delay_samples":480,"delay_ms":10.0,"correlation_peak":0.99,"polarity":1,"ambiguity":0.05,"sample_rate":48000.0,"seconds":5.0,"aligned":"block"}`
+- `delay_samples`: integer, **positive = B arrives after A**. Found with normalized cross-correlation over `seconds` of audio, searching ±`max_lag_ms` (1…1000, default 1000); `seconds` 0.5…10, default 5.
+- `correlation_peak`: 0…1, |normalized correlation| at the peak. Above ~0.5 the result is reliable.
+- `polarity`: 1, or -1 when the peak is negative (polarity inverted between A and B).
+- `ambiguity`: 0…1, second peak / first peak (outside ±1 ms of the first). Near 1 = periodic signal (a loop, a steady tone): the delay is not unique. Use noise or music; aim for < 0.5.
+- `aligned`: `"block"` = A and B sampled in the same audio cycle (exact to the sample); `"clock"` = aligned by timestamps (a few samples of possible error, e.g. probes on different tracks).
+- Timing: capture starts at the first request for that pair and stays on for 120 s after the last one. The first answer takes about `seconds + 2·max_lag + 0.5` s, later ones are immediate. Clients should wait at least `seconds + 2·max_lag + 3` s. Other requests on the same connection keep being answered meanwhile, so answers can arrive out of order: match them by `rid`.
+- Errors: `not_found`; `bad_request` (a == b, different sample rates, values out of range); `busy` (A or B without signal, below -90 dBFS, or not enough audio yet); `unsupported`.
 
 ## 6. Plugin requirements (VST3)
 - Stereo in/out (mono variant optional). Pass-through, zero latency, no tail.

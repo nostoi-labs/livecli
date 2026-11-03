@@ -47,6 +47,9 @@ def call(cmd, timeout=10, **kw):
     if not data:
         raise LiveError("empty answer from Live")
     r = json.loads(data.decode())
+    if "risultato" in r or "errore" in r:
+        raise LiveError("Live is running the old ClaudeLive script: in Live choose LiveCLI as Control Surface "
+                        "(Settings > Link, Tempo & MIDI)")
     if not r.get("ok"):
         raise LiveError(r.get("error") or r.get("errore") or "error from Live")
     return r.get("result", r.get("risultato"))

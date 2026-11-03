@@ -62,7 +62,12 @@ def bar_to_beats(bar, song=None):
 
 def print_devices(devs, ind="    "):
     for d in devs:
-        print("%s[%s] %s %s" % (ind, d["path"], onoff(d["on"]), d["name"]))
+        extra = ""
+        if d.get("latency_samples"):
+            extra += "  latency %d smp (%.2f ms)" % (d["latency_samples"], d.get("latency_ms", 0))
+        if d.get("ab") == "B":
+            extra += "  [B]"
+        print("%s[%s] %s %s%s" % (ind, d["path"], onoff(d["on"]), d["name"], extra))
         for ch in d.get("chains", []):
             print("%s    chain: %s" % (ind, ch["name"]))
             print_devices(ch["devices"], ind + "        ")
@@ -564,6 +569,14 @@ def replace(triplets):
         if "." in d["path"]:
             raise LiveError("replace works on top-level devices (%s is inside a rack)" % d["name"])
         jobs.append((t["ref"], t["name"], int(d["path"]), d["name"], path))
+    call("undo_begin")
+    try:
+        _replace_jobs(jobs)
+    finally:
+        call("undo_end")
+
+
+def _replace_jobs(jobs):
     for ref, tn, i, name, _ in jobs:
         call("device_on", track=ref, device=str(i), on=False)
         print("off      %s / %s" % (tn, name))
@@ -622,12 +635,16 @@ def c_mode(a):
         raise LiveError("mode '%s' not in config (modes: %s)" % (a[0], ", ".join(modes) or "none"))
     names = [n.lower() for n in names]
     done = []
-    for t in tracks():
-        for d in all_devices(t["devices"]):
-            if d["on"] and any(n in d["name"].lower() for n in names):
-                call("device_on", track=t["ref"], device=d["path"], on=False)
-                done.append({"track": t["ref"], "track_name": t["name"], "path": d["path"], "name": d["name"]})
-                print("off  %-24s %s" % (t["name"][:24], d["name"]))
+    call("undo_begin")
+    try:
+        for t in tracks():
+            for d in all_devices(t["devices"]):
+                if d["on"] and any(n in d["name"].lower() for n in names):
+                    call("device_on", track=t["ref"], device=d["path"], on=False)
+                    done.append({"track": t["ref"], "track_name": t["name"], "path": d["path"], "name": d["name"]})
+                    print("off  %-24s %s" % (t["name"][:24], d["name"]))
+    finally:
+        call("undo_end")
     os.makedirs(CONFIG_DIR, exist_ok=True)
     json.dump(done, open(state, "w"), indent=1, ensure_ascii=False)
     print("%d devices off; 'live mode restore' switches them back on" % len(done))
@@ -746,7 +763,7 @@ def c_probes(a):
               "signal" if r.get("signal") else ("active" if r.get("active") else "idle"), where))
 
 
-@command("probe-add", "probe-add <track> [after <device>|first] [label]", "load a probe plugin on a track, give it a new "
+@command("probe-add", "probe-add <track> [after <device>|first] [label] [--plugin NAME]", "load a probe plugin on a track, give it a new "
          "Probe ID and wait until it reports", "probes", aliases=("sonda",))
 def c_probe_add(a):
     need(a, 1, "probe-add <track> [after <device>|first] [label]")
@@ -760,9 +777,13 @@ def c_probe_add(a):
         rest = rest[2:]
     elif rest[:1] == ["first"]:
         first, rest = True, rest[1:]
-    label = " ".join(rest)
     plugin = config().get("probe_plugin", "Loudline Probe")
-    path = config().get("probe_browser_path")
+    if "--plugin" in rest:
+        k = rest.index("--plugin")
+        plugin = rest[k + 1]
+        rest = rest[:k] + rest[k + 2:]
+    label = " ".join(rest)
+    path = None if "--plugin" in a else config().get("probe_browser_path")
     if not path:
         hits = [h for h in call("search", q=plugin, roots=["plugins"], timeout=30) if h.lower().endswith(plugin.lower())]
         if not hits:
@@ -965,6 +986,153 @@ def c_probe_label(a):
     s, i = P.find(insts, a[0])
     s.request({"cmd": "set_label", "uid": i["uid"], "label": " ".join(a[1:])})
     out(True, "ok")
+
+
+@command("inspect", "inspect song|app|view|track <t>|mixer <t>|device <t> <d>|param <t> <d> <p>|clip <t> <slot>|scene <i> [filter]",
+         "what Live's API offers on an object (properties with values, methods): read-only", "other")
+def c_inspect(a):
+    what = a[0] if a else "song"
+    rest = a[1:]
+    kw = {"what": what}
+    if what in ("track", "mixer", "device", "param", "clip", "arrangement_clip"):
+        need(rest, 1, "inspect %s <track> ..." % what)
+        t = track(rest[0])
+        kw["track"] = t["ref"]
+        rest = rest[1:]
+        if what in ("device", "param"):
+            need(rest, 1, "inspect %s <track> <device>" % what)
+            kw["device"] = find_device(t, rest[0])["path"]
+            rest = rest[1:]
+            if what == "param":
+                need(rest, 1, "inspect param <track> <device> <param>")
+                ps = call("params", track=t["ref"], device=kw["device"])["params"]
+                kw["param"] = find_param(ps, rest[0])["i"]
+                rest = rest[1:]
+        if what == "clip":
+            kw["slot"] = int(rest[0])
+            rest = rest[1:]
+        if what == "arrangement_clip":
+            kw["index"] = int(rest[0])
+            rest = rest[1:]
+    elif what == "scene":
+        kw["scene"] = int(rest[0])
+        rest = rest[1:]
+    f = rest[0].lower() if rest else ""
+    r = call("inspect", timeout=15, **kw)
+    if f:
+        r["properties"] = {k: v for k, v in r["properties"].items() if f in k.lower()}
+        r["methods"] = [m for m in r["methods"] if f in m.lower()]
+    if JSON:
+        return out(r)
+    print("%s (%d properties, %d methods)" % (r["type"], len(r["properties"]), len(r["methods"])))
+    for k, v in r["properties"].items():
+        print("  %-40s %s" % (k, v))
+    if r["methods"]:
+        print("  methods: " + ", ".join(r["methods"]))
+
+
+@command("ab", "ab <track> <device> [a|b|toggle|save]", "Live 12 device A/B compare: show, switch, or copy the "
+         "current state into the other slot", "devices")
+def c_ab(a):
+    need(a, 2, "ab <track> <device> [a|b|toggle|save]")
+    t = track(a[0])
+    d = find_device(t, a[1])
+    r = call("ab", track=t["ref"], device=d["path"], op=a[2] if len(a) > 2 else None)
+    out(r, "%s / %s: using %s" % (t["name"], r["device"], r["using"]))
+
+
+@command("impact", "impact [n]", "tracks sorted by Live's CPU impact (performance_impact)", "info")
+def c_impact(a):
+    n = int(a[0]) if a else 15
+    ts = sorted(tracks(), key=lambda t: -(t.get("cpu_impact") or 0))[:n]
+    rows = [{"ref": t["ref"], "name": t["name"], "cpu_impact": t.get("cpu_impact")} for t in ts]
+    out(rows, "\n".join("  %-4s %-28s %5.1f%%  %s" % (r["ref"], r["name"][:28], 100 * (r["cpu_impact"] or 0),
+                                                     "#" * int(200 * (r["cpu_impact"] or 0))) for r in rows))
+
+
+def _find_probe_at(ref, path):
+    devs = _probe_devices()
+    pid = next((k for k, v in devs.items() if v[0] == ref and v[2] == path), None)
+    if pid is None:
+        return None
+    return next(((s, i) for s, i in P.instances() if i.get("probe_id") == pid), None)
+
+
+@command("latency", "latency <track> <device> [seconds] [--keep]", "real latency of a device or hardware insert, "
+         "measured with two probes around it, vs the latency Live assumes (needs playback with signal)", "probes")
+def c_latency(a):
+    need(a, 2, "latency <track> <device> [seconds] [--keep]")
+    t = track(a[0])
+    d = find_device(t, a[1])
+    if "." in d["path"]:
+        raise LiveError("latency works on top-level devices")
+    nums = [x for x in a[2:] if not x.startswith("--")]
+    sec = float(nums[0]) if nums else 5.0
+    if not call("song")["playing"]:
+        raise LiveError("start playback first: the measurement needs audio through %s" % d["name"])
+    added = []
+    i = int(d["path"])
+    # probe before the device
+    pre = _find_probe_at(t["ref"], str(i - 1)) if i > 0 else None
+    if pre is None:
+        if i == 0:
+            c_probe_add([t["ref"], "first", "lat-pre"])
+        else:
+            c_probe_add([t["ref"], "after", str(i - 1), "lat-pre"])
+        added.append("lat-pre")
+        i += 1
+    post = _find_probe_at(t["ref"], str(i + 1))
+    if post is None:
+        c_probe_add([t["ref"], "after", str(i), "lat-post"])
+        added.append("lat-post")
+    pre = _find_probe_at(t["ref"], str(i - 1))
+    post = _find_probe_at(t["ref"], str(i + 1))
+    if not pre or not post:
+        raise LiveError("could not find the two probes around %s" % d["name"])
+    if pre[0].path != post[0].path or not pre[0].has("delay"):
+        raise LiveError("the probes must be the same product and support 'delay' (Reference/Loudline Probe 0.1.1+)")
+    max_lag = 1000
+    r = pre[0].request({"cmd": "delay", "a": pre[1]["uid"], "b": post[1]["uid"], "seconds": sec, "max_lag_ms": max_lag},
+                       timeout=sec + 2 * max_lag / 1000.0 + 5)
+    dev = next(x for x in track(t["ref"])["devices"] if x["path"] == str(i))
+    live_smp = dev.get("latency_samples")
+    res = {"track": t["name"], "device": dev["name"], "class": dev["class"], "measured_samples": r["delay_samples"],
+           "measured_ms": r["delay_ms"], "live_assumes_samples": live_smp, "live_assumes_ms": dev.get("latency_ms"),
+           "correlation_peak": r.get("correlation_peak"), "polarity": r.get("polarity"),
+           "ambiguity": r.get("ambiguity"), "aligned": r.get("aligned"), "sample_rate": r.get("sample_rate")}
+    if live_smp is not None:
+        res["difference_samples"] = r["delay_samples"] - live_smp
+        res["difference_ms"] = round(res["difference_samples"] / r["sample_rate"] * 1000, 3)
+    if "--keep" not in a:
+        cur = track(t["ref"])["devices"]
+        for k in range(len(cur) - 1, -1, -1):
+            pr = _find_probe_at(t["ref"], cur[k]["path"])
+            if pr and pr[1].get("label") in added:
+                call("delete_device", track=t["ref"], device=cur[k]["path"])
+    if JSON:
+        return out(res)
+    warn = []
+    if (r.get("correlation_peak") or 0) < 0.5:
+        warn.append("low correlation: the device changes the signal a lot, the result may be wrong")
+    if (r.get("ambiguity") or 0) > 0.5:
+        warn.append("ambiguous: periodic signal (a loop or a steady tone), use noise or a full mix")
+    if r.get("polarity") == -1:
+        warn.append("polarity is inverted between before and after")
+    print("%s / %s: measured %d samples (%.2f ms), Live assumes %s" % (
+        t["name"], dev["name"], r["delay_samples"], r["delay_ms"],
+        "%d samples (%.2f ms)" % (live_smp, dev.get("latency_ms") or 0) if live_smp is not None else "?"))
+    if live_smp is not None:
+        dms = res["difference_ms"]
+        if abs(res["difference_samples"]) <= 2:
+            print("  matches: Live compensates this device correctly")
+        else:
+            print("  difference %+d samples (%+.2f ms): %s" % (res["difference_samples"], dms,
+                  "add %.2f ms to the device's Hardware Latency" % dms if dev["class"] == "ProxyAudioEffectDevice" and dms > 0 else
+                  "remove %.2f ms from the device's Hardware Latency" % -dms if dev["class"] == "ProxyAudioEffectDevice" else
+                  "Live's delay compensation is off by this much for this device"))
+    print("  correlation %.2f, ambiguity %.2f, alignment %s" % (r.get("correlation_peak") or 0, r.get("ambiguity") or 0, r.get("aligned")))
+    for w in warn:
+        print("  warning: " + w)
 
 
 # ================================================================== maintenance

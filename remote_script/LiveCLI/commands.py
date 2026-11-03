@@ -15,7 +15,7 @@ import re
 
 import Live
 
-VERSION = 10
+VERSION = 11
 DEFERRED = object()
 
 
@@ -93,6 +93,16 @@ def _dev_on(d):
 def _dev_info(d, path):
     info = {"i": int(path.split(".")[-1]), "path": path, "name": d.name, "class": d.class_name,
             "type": str(d.type), "on": _dev_on(d)}
+    try:
+        info["latency_samples"] = d.latency_in_samples
+        info["latency_ms"] = round(d.latency_in_ms, 3)
+    except Exception:
+        pass
+    try:
+        if d.can_compare_ab:
+            info["ab"] = "B" if d.is_using_compare_preset_b else "A"
+    except Exception:
+        pass
     if d.can_have_chains:
         info["chains"] = [{"name": ch.name,
                            "devices": [_dev_info(x, "%s.%d.%d" % (path, c, j)) for j, x in enumerate(ch.devices)]}
@@ -274,6 +284,7 @@ def c_tracks(cs, req):
     for ref, t in _tracks(cs):
         md = t.mixer_device
         e = {"ref": ref, "name": t.name, "color": _color(t), "volume": str(md.volume),
+             "cpu_impact": round(getattr(t, "performance_impact", 0.0) or 0.0, 4),
              "pan": str(md.panning),
              "devices": [_dev_info(d, str(j)) for j, d in enumerate(t.devices)]}
         if ref != "m":
@@ -377,6 +388,68 @@ def c_notes(cs, req):
     notes = c.get_notes_extended(0, 128, 0.0, 1e6)
     return [{"pitch": n.pitch, "start": n.start_time, "duration": n.duration, "velocity": n.velocity,
              "mute": n.mute, "probability": n.probability} for n in notes]
+
+
+def _lom_object(cs, req):
+    """Resolve 'song', 'app', 'view', or a track/device/mixer/clip reference to a Live object."""
+    what = req.get("what", "song")
+    s = _song(cs)
+    if what == "song":
+        return s
+    if what == "app":
+        return Live.Application.get_application()
+    if what == "view":
+        return s.view
+    if what == "appview":
+        return Live.Application.get_application().view
+    if what == "track":
+        return _track(cs, req["track"])
+    if what == "mixer":
+        return _track(cs, req["track"]).mixer_device
+    if what == "device":
+        return _resolve(cs, req["track"], req["device"])[2]
+    if what == "param":
+        return _resolve(cs, req["track"], req["device"])[2].parameters[int(req["param"])]
+    if what == "clip":
+        return _clip(cs, req)[2]
+    if what == "arrangement_clip":
+        return list(_track(cs, req["track"]).arrangement_clips)[int(req["index"])]
+    if what == "scene":
+        return _scene_ref(cs, req["scene"])
+    raise ValueError("what = song | app | view | appview | track | mixer | device | param | clip | arrangement_clip | scene")
+
+
+def _short(v):
+    if isinstance(v, (bool, int, float)) or v is None:
+        return v
+    if isinstance(v, str):
+        return v[:200]
+    try:
+        n = len(v)
+        return "<%s, %d items>" % (type(v).__name__, n)
+    except Exception:
+        pass
+    return "<%s>" % type(v).__name__
+
+
+def c_inspect(cs, req):
+    """Discover what Live's API offers on an object: properties with their current value, and methods.
+    Read-only: calls nothing, only reads attributes."""
+    obj = _lom_object(cs, req)
+    props, methods = {}, []
+    for name in sorted(dir(obj)):
+        if name.startswith("_") or name.endswith("_has_listener") or name.startswith("add_") or name.startswith("remove_"):
+            continue
+        try:
+            v = getattr(obj, name)
+        except Exception as e:
+            props[name] = "<error: %s>" % type(e).__name__
+            continue
+        if callable(v):
+            methods.append(name)
+        else:
+            props[name] = _short(v)
+    return {"type": type(obj).__name__, "properties": props, "methods": methods}
 
 
 # ------------------------------------------------------------------ browser
@@ -714,6 +787,31 @@ def c_rename_device(cs, req):
     _, _, d = _resolve(cs, req["track"], req["device"])
     d.name = req["name"]
     return {"device": d.name}
+
+
+def c_ab(cs, req):
+    """Live 12 device A/B compare: show, switch to a|b, or save the current state into the other slot."""
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    if not getattr(d, "can_compare_ab", False):
+        raise ValueError("%s has no A/B compare" % d.name)
+    op = req.get("op")
+    if op in ("a", "b"):
+        d.is_using_compare_preset_b = (op == "b")
+    elif op == "save":
+        d.save_preset_to_compare_ab_slot()
+    elif op == "toggle":
+        d.is_using_compare_preset_b = not d.is_using_compare_preset_b
+    return {"device": d.name, "using": "B" if d.is_using_compare_preset_b else "A"}
+
+
+def c_undo_begin(cs, req):
+    _song(cs).begin_undo_step()
+    return True
+
+
+def c_undo_end(cs, req):
+    _song(cs).end_undo_step()
+    return True
 
 
 # ------------------------------------------------------------------ scenes and clips

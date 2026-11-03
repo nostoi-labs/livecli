@@ -40,6 +40,11 @@ class Device:
         self.parameters = [Param("Device On", 1.0, 0, 1, True, choices=["Off", "On"])] + (params or [])
         self.chains = chains or []
         self.can_have_chains = bool(chains)
+        self.latency_in_samples, self.latency_in_ms = 0, 0.0
+        self.can_compare_ab, self.is_using_compare_preset_b = True, False
+
+    def save_preset_to_compare_ab_slot(self):
+        pass
 
 
 class Chain:
@@ -120,6 +125,7 @@ class Track:
         self.current_monitoring_state, self.is_frozen, self.fold_state = 1, False, False
         self.group_track = None
         self.output_meter_left = self.output_meter_right = 0.5
+        self.performance_impact = 0.02
         self.available_output_routing_types = [Routing("Master"), Routing("Ext. Out")]
         self.available_output_routing_channels = [Routing("1/2"), Routing("3/4")]
         self.available_input_routing_types = [Routing("Ext. In"), Routing("No Input")]
@@ -197,6 +203,12 @@ class Song:
 
     def undo(self):
         self.can_redo = True
+
+    def begin_undo_step(self):
+        self.undo_steps = getattr(self, "undo_steps", 0) + 1
+
+    def end_undo_step(self):
+        pass
 
     def redo(self):
         pass
