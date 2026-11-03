@@ -4,12 +4,14 @@
 // IInfoListener and a Probe ID through the parameter, then plays the signals in real time,
 // checking on every block that the output equals the input bit for bit.
 //
-//   probe_vst3host <plugin.vst3> <seconds> <signal> [<signal> ...]
+//   probe_vst3host <plugin.vst3>[,<plugin2.vst3>…] <seconds> <signal> [<signal> ...]
 //   signal: [<track name>=]<kind>[@inplace][@mono]
 //   kind:   sine:<hz>:<dBFS> | sinel:<hz>:<dBFS> (left only) | noise:<dBFS> | anti:<dBFS> | silence
 //           | eqnoise:<dBFS>:<hz>:<gain dB> (the same noise as `noise`, through an RBJ peaking EQ, Q 1)
 //   @inplace: input and output share the same buffers (as some hosts do)
 //   @mono:    mono bus arrangement (1 channel)
+//   @p<N>:    instance of the N-th bundle when <plugin.vst3> is a comma-separated list
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -38,6 +40,7 @@ struct Signal {
     std::string kind, name;
     double hz = 1000, db = -6, gain = 0;
     bool inplace = false, mono = false;
+    int plugin = 1;
     double phase = 0;
     std::mt19937 rng{1234};
     // peaking EQ state (direct form I, per channel)
@@ -86,6 +89,7 @@ static Signal parseSignal(std::string s) {
         std::string f = s.substr(at + 1);
         if (f == "inplace") g.inplace = true;
         if (f == "mono") g.mono = true;
+        if (f.size() > 1 && f[0] == 'p') g.plugin = atoi(f.c_str() + 1);
         s = s.substr(0, at);
     }
     std::vector<std::string> p;
@@ -123,24 +127,42 @@ int main(int argc, char** argv) {
     const double sr = 48000;
     const int block = 512;
     std::string err;
-    auto module = VST3::Hosting::Module::create(argv[1], err);
-    if (!module) { fprintf(stderr, "load failed: %s\n", err.c_str()); return 1; }
-    auto factory = module->getFactory();
+    // one or more bundles, comma separated: signals pick one with @p2, @p3 … (default @p1)
+    std::vector<VST3::Hosting::Module::Ptr> modules;
+    std::vector<VST3::Hosting::ClassInfo> infos;
     static HostApplication host;
     PluginContextFactory::instance().setPluginContext(&host);
-    VST3::Hosting::ClassInfo info;
-    bool found = false;
-    for (auto& ci : factory.classInfos())
-        if (ci.category() == kVstAudioEffectClass) { info = ci; found = true; break; }
-    if (!found) { fprintf(stderr, "no audio effect class\n"); return 1; }
-    printf("plugin: %s (%s) vendor %s version %s\n", info.name().c_str(), info.subCategoriesString().c_str(),
-           info.vendor().c_str(), info.version().c_str());
+    {
+        std::string list = argv[1];
+        size_t a = 0;
+        while (a <= list.size()) {
+            size_t b = list.find(',', a);
+            if (b == std::string::npos) b = list.size();
+            std::string path = list.substr(a, b - a);
+            a = b + 1;
+            if (path.empty()) continue;
+            auto module = VST3::Hosting::Module::create(path, err);
+            if (!module) { fprintf(stderr, "load failed: %s\n", err.c_str()); return 1; }
+            bool found = false;
+            for (auto& ci : module->getFactory().classInfos())
+                if (ci.category() == kVstAudioEffectClass) {
+                    printf("plugin %zu: %s (%s) vendor %s version %s\n", modules.size() + 1, ci.name().c_str(),
+                           ci.subCategoriesString().c_str(), ci.vendor().c_str(), ci.version().c_str());
+                    infos.push_back(ci);
+                    found = true;
+                    break;
+                }
+            if (!found) { fprintf(stderr, "no audio effect class in %s\n", path.c_str()); return 1; }
+            modules.push_back(module);
+        }
+    }
 
     std::vector<std::unique_ptr<Inst>> insts;
     for (int k = 3; k < argc; k++) {
         auto in = std::make_unique<Inst>();
         in->sig = parseSignal(argv[k]);
-        in->provider = owned(new PlugProvider(factory, info, true));
+        const size_t pi = std::min(modules.size(), (size_t)std::max(1, in->sig.plugin)) - 1;
+        in->provider = owned(new PlugProvider(modules[pi]->getFactory(), infos[pi], true));
         if (!in->provider->initialize()) { fprintf(stderr, "initialize failed\n"); return 1; }
         in->comp = in->provider->getComponentPtr();
         in->ctrl = in->provider->getControllerPtr();

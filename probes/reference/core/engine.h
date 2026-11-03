@@ -38,6 +38,8 @@ public:
     /// Clears integrated loudness, LRA and max true peak.
     virtual void reset() = 0;
     virtual bool hasBands() const = 0;
+    /// Analysis thread, before process(): 1 = mono instance (then r == a copy of l), 2 = stereo.
+    virtual void setChannels(int channels) {}
     /// `integrated`: also compute lufs_i and lra (may be slower; the engine may cache them).
     virtual void loudness(LoudnessValues&, bool integrated) {}
     /// Max true peak (dBTP) since the previous call, for the 1-second history. NaN if unsupported.

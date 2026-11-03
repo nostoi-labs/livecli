@@ -114,6 +114,7 @@ private:
     mutable std::mutex m_;
     std::unique_ptr<Engine> engine_;
     double sr_ = 0;
+    int engineChannels_ = 0;
     int tickLen_ = 480;
     Tick cur_;
     std::vector<Tick> ticks_;  // ring

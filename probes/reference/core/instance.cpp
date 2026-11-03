@@ -118,6 +118,7 @@ int Instance::analyze() {
     int total = 0;
     while (ring_.read(bi, bufL_.data(), bufR_.data())) {
         if (bi.sampleRate != sr_ && bi.sampleRate > 0) prepare(bi.sampleRate);
+        if (bi.channels != engineChannels_) engine_->setChannels(engineChannels_ = bi.channels);
         int off = 0;
         while (off < bi.frames) {
             int n = std::min(bi.frames - off, tickLen_ - cur_.n);
