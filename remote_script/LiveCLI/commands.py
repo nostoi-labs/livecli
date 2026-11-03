@@ -1328,7 +1328,10 @@ def c_groove(cs, req):
     if req.get("track") is not None:
         _, _, c = _clip(cs, req)
         if req.get("clear"):
-            c.groove = None
+            try:
+                c.groove = None
+            except Exception:
+                raise ValueError("not supported by Live's API: removing a clip's groove (choose None in the clip's Groove chooser)")
         elif req.get("index") is not None:
             c.groove = pool[int(req["index"])]
         g = _safe(c, "groove")

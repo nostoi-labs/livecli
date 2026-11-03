@@ -141,7 +141,10 @@ def c_notes_edit(a):
         lo, hi = float(kw.get("min", 40)), float(kw.get("max", 120))
         vs = [n["velocity"] for n in notes]
         a_, b_ = min(vs), max(vs)
-        out = [dict(n, velocity=lo + (n["velocity"] - a_) * (hi - lo) / ((b_ - a_) or 1)) for n in notes]
+        if b_ == a_:                      # all equal: nothing to stretch, keep them (clamped to the range)
+            out = [dict(n, velocity=min(hi, max(lo, n["velocity"]))) for n in notes]
+        else:
+            out = [dict(n, velocity=lo + (n["velocity"] - a_) * (hi - lo) / (b_ - a_)) for n in notes]
     else:
         raise LiveError("op: humanize, swing, ratchet, retrograde, arp, scale, legato, velocity-curve")
     r = write_notes(ref, cr, out)

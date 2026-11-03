@@ -28,7 +28,7 @@ def classify(message):
         return "ambiguous"
     if "not found" in m or "no device" in m or "no clip" in m or "bad track reference" in m or "no locator" in m:
         return "not_found"
-    if "has no setter" in m or "attributeerror" in m or "not available in live" in m or "unsupported" in m:
+    if "has no setter" in m or "attributeerror" in m or "not available in live" in m or "unsupported" in m or "not supported" in m:
         return "not_supported_by_live_api"
     if "probe" in m:
         return "probe"

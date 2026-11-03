@@ -365,6 +365,32 @@ class LiveCommands(unittest.TestCase):
         self.assertEqual(run("notes-edit", "synth", "2", "humanize", "timing=0.01")[0], 0)
         run("clip", "delete", "synth", "2")
 
+    def test_midi_tools_2(self):
+        run("clip", "new", "synth", "2", "4")
+
+        def notes():
+            return sorted(json.loads(run("notes", "synth", "2")[1]), key=lambda x: (x["start"], x["pitch"]))
+        run("pattern", "synth", "2", "xxxxxxxx", "pitch=60", "step=1/8")
+        run("notes-edit", "synth", "2", "swing", "amount=66", "grid=1/8")
+        self.assertEqual([round(x["start"], 2) for x in notes()], [0, 0.66, 1, 1.66, 2, 2.66, 3, 3.66])
+        run("pattern", "synth", "2", "x.x.x.x.", "pitch=60", "step=1/8")
+        run("notes-edit", "synth", "2", "legato")
+        self.assertEqual([x["duration"] for x in notes()], [1.0, 1.0, 1.0, 1.0])
+        run("notes-edit", "synth", "2", "velocity-curve", "min=40", "max=120")
+        self.assertEqual({x["velocity"] for x in notes()}, {100.0})      # all equal: unchanged
+        sys_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps([{"pitch": 60, "start": 0, "duration": 0.25, "velocity": 50},
+                                            {"pitch": 62, "start": 1, "duration": 0.25, "velocity": 110}]))
+        try:
+            run("set-notes", "synth", "2")
+        finally:
+            sys.stdin = sys_stdin
+        run("notes-edit", "synth", "2", "velocity-curve", "min=40", "max=120")
+        self.assertEqual([x["velocity"] for x in notes()], [40.0, 120.0])
+        run("notes-edit", "synth", "2", "retrograde")
+        self.assertEqual([(x["start"], x["pitch"]) for x in notes()], [(2.75, 62), (3.75, 60)])
+        run("clip", "delete", "synth", "2")
+
     def test_transpose_in_scale(self):
         from livecli import cmd_midi as M
         major = [0, 2, 4, 5, 7, 9, 11]

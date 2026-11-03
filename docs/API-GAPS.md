@@ -18,6 +18,8 @@ Verified with Ableton Live 12.4.16 on macOS 27 using `live inspect`. Run `live i
 | Pad names in a Drum Rack | read-only | rename the chain inside the pad |
 | Replace the sample of an audio clip | not exposed | load the file in a new clip (`live arr-add <track> <bar> file <path>`) |
 | Add or remove warp markers | only reading and moving (`live warp-move`); the last marker is a "shadow" marker and cannot be moved | the user, in the clip view |
+| Remove a clip's groove | setting none is refused (applying one works: `live groove <track> <clip> <index>`) | the user: Groove chooser in the clip view |
+| Plugin presets | `presets` lists only "Default" for the AU and VST3 plugins tested (Apple, Waves, LiquidSonics, FabFilter, SSL): selection works only for plugins that publish programs to Live | the plugin's own preset browser |
 | Plugin parameters | `live preset` lists all of a plugin's parameter names and tells which ones are not exposed (e.g. FabFilter Pro-Q 4: 1 of 600) | Configure in Live, then `live set` |
 
 ## Traps found while testing
