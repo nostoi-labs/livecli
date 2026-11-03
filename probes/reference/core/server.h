@@ -41,6 +41,8 @@ public:
 
 /// Socket directory: $LIVEPROBES_DIR, else ~/Library/Application Support/LiveProbes.
 std::string socketDir();
+/// §1 fallback when the socket path would exceed 104 bytes: /tmp/LiveProbes-<uid>.
+std::string fallbackSocketDir();
 
 class Server {
 public:

@@ -73,11 +73,14 @@ struct Parser {
                         unsigned cp;
                         if (!hex4(cp)) return false;
                         if (cp >= 0xD800 && cp < 0xDC00 && i + 6 <= s.size() && s[i] == '\\' && s[i + 1] == 'u') {
+                            size_t save = i;
                             i += 2;
                             unsigned lo;
                             if (!hex4(lo)) return false;
-                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            if (lo >= 0xDC00 && lo < 0xE000) cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            else i = save;  // lone high surrogate: replaced below, the next escape stands alone
                         }
+                        if (cp >= 0xD800 && cp < 0xE000) cp = 0xFFFD;  // lone surrogate
                         utf8(o, cp);
                         break;
                     }
@@ -183,9 +186,41 @@ JWriter& JWriter::number(double v, int decimals) {
     return *this;
 }
 
+namespace {
+/// Length of the valid UTF-8 sequence starting at p (1-4), or 0 when it is not valid UTF-8.
+size_t utf8Len(const unsigned char* p, size_t left) {
+    unsigned c = p[0];
+    size_t n;
+    unsigned cp;
+    if (c < 0x80) return 1;
+    if (c >= 0xC2 && c <= 0xDF) { n = 2; cp = c & 0x1F; }
+    else if (c >= 0xE0 && c <= 0xEF) { n = 3; cp = c & 0x0F; }
+    else if (c >= 0xF0 && c <= 0xF4) { n = 4; cp = c & 0x07; }
+    else return 0;
+    if (left < n) return 0;
+    for (size_t k = 1; k < n; k++) {
+        if ((p[k] & 0xC0) != 0x80) return 0;
+        cp = (cp << 6) | (p[k] & 0x3F);
+    }
+    if ((n == 3 && cp < 0x800) || (n == 4 && (cp < 0x10000 || cp > 0x10FFFF)) || (cp >= 0xD800 && cp < 0xE000)) return 0;
+    return n;
+}
+}  // namespace
+
 void JWriter::quote(const std::string& v) {
     s_ += '"';
-    for (unsigned char c : v) {
+    const unsigned char* p = (const unsigned char*)v.data();
+    const size_t len = v.size();
+    for (size_t i = 0; i < len;) {
+        unsigned char c = p[i];
+        if (c >= 0x80) {
+            // non-ASCII passes through as UTF-8; invalid bytes become U+FFFD so the line stays valid JSON
+            size_t n = utf8Len(p + i, len - i);
+            if (n) s_.append((const char*)p + i, n), i += n;
+            else s_ += "\xEF\xBF\xBD", i++;
+            continue;
+        }
+        i++;
         switch (c) {
             case '"': s_ += "\\\""; break;
             case '\\': s_ += "\\\\"; break;

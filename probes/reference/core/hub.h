@@ -50,6 +50,10 @@ public:
     /// Path of the running socket ("" when none).
     std::string socketPath() const;
 
+    /// Module unload (bundleExit): stops the server and the analysis thread even if a host leaked
+    /// instances, so no thread runs code of an unmapped bundle.
+    void shutdown();
+
     /// For tests: run without the socket server (in-process protocol only).
     void setServerEnabled(bool on) { serverEnabled_ = on; }
 

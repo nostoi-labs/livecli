@@ -331,12 +331,36 @@ std::string socketDir() {
     return h + "/Library/Application Support/LiveProbes";
 }
 
+std::string fallbackSocketDir() { return "/tmp/LiveProbes-" + std::to_string((unsigned long)getuid()); }
+
 namespace {
 
 void setNonBlock(int fd) {
     int fl = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
+}
+
+/// Creates `dir` (and missing parents) with mode 0700 for the new components. The final directory
+/// must be a real directory owned by us; in /tmp it must also be 0700 (it is shared with other users).
+bool ensureDir(const std::string& dir, bool strict) {
+    for (size_t pos = 1; pos <= dir.size(); pos++) {
+        if (pos != dir.size() && dir[pos] != '/') continue;
+        std::string part = dir.substr(0, pos);
+        struct stat pst;
+        if (stat(part.c_str(), &pst) == 0) continue;
+        if (mkdir(part.c_str(), 0700) != 0 && errno != EEXIST) {
+            fprintf(stderr, "[liveprobe] cannot create %s: %s\n", part.c_str(), strerror(errno));
+            return false;
+        }
+    }
+    struct stat st;
+    if (lstat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
+        fprintf(stderr, "[liveprobe] %s is not a directory owned by this user\n", dir.c_str());
+        return false;
+    }
+    if (strict && (st.st_mode & 077) != 0 && chmod(dir.c_str(), 0700) != 0) return false;
+    return true;
 }
 
 void cleanupStale(const std::string& dir, const std::string& prod) {
@@ -348,7 +372,7 @@ void cleanupStale(const std::string& dir, const std::string& prod) {
         if (n.size() <= prefix.size() + 5 || n.compare(0, prefix.size(), prefix) != 0) continue;
         if (n.compare(n.size() - 5, 5, ".sock") != 0) continue;
         std::string mid = n.substr(prefix.size(), n.size() - prefix.size() - 5);
-        if (mid.empty() || mid.find_first_not_of("0123456789") != std::string::npos) continue;
+        if (mid.empty() || mid.size() > 9 || mid.find_first_not_of("0123456789") != std::string::npos) continue;
         pid_t pid = (pid_t)atol(mid.c_str());
         bool dead = pid == getpid() || (kill(pid, 0) == -1 && errno == ESRCH);
         if (dead) unlink((dir + "/" + n).c_str());
@@ -363,34 +387,49 @@ struct Client {
     bool closing = false;
 };
 
+/// Best effort, bounded: used for the last events before the server closes.
+void flushBlocking(Client& c, double untilT) {
+    while (!c.out.empty() && monoNow() < untilT) {
+        ssize_t n = send(c.fd, c.out.data(), c.out.size(), 0);
+        if (n > 0) { c.out.erase(0, (size_t)n); continue; }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            pollfd p{c.fd, POLLOUT, 0};
+            poll(&p, 1, 10);
+            continue;
+        }
+        break;
+    }
+}
+
 }  // namespace
 
 Server::Server() = default;
 Server::~Server() { stop(); }
 
 bool Server::start() {
-    const std::string dir = socketDir();
-    struct stat st;
-    if (stat(dir.c_str(), &st) != 0) {
-        if (mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
-            fprintf(stderr, "[liveprobe] cannot create %s: %s\n", dir.c_str(), strerror(errno));
-            return false;
-        }
-        chmod(dir.c_str(), 0700);
-    }
     const std::string prod = product().id;
-    cleanupStale(dir, prod);
-    path_ = dir + "/" + prod + "-" + std::to_string(getpid()) + ".sock";
+    const std::string name = "/" + prod + "-" + std::to_string(getpid()) + ".sock";
     sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
+    std::string dir = socketDir();
+    // §1: macOS limits sun_path to 104 bytes; long paths (long user names, long LIVEPROBES_DIR) use /tmp
+    if (dir.size() + name.size() >= sizeof(addr.sun_path) || !ensureDir(dir, false)) {
+        dir = fallbackSocketDir();
+        if (!ensureDir(dir, true)) return false;
+    }
+    // stale sockets of this product, in both places a client looks
+    cleanupStale(socketDir(), prod);
+    cleanupStale(fallbackSocketDir(), prod);
+    path_ = dir + name;
     if (path_.size() >= sizeof(addr.sun_path)) {
         fprintf(stderr, "[liveprobe] socket path too long: %s\n", path_.c_str());
         path_.clear();
         return false;
     }
+    addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path_.c_str(), sizeof(addr.sun_path) - 1);
     listenFd_ = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listenFd_ < 0) return false;
+    if (listenFd_ < 0) { path_.clear(); return false; }
+    fcntl(listenFd_, F_SETFD, FD_CLOEXEC);
     unlink(path_.c_str());
     if (bind(listenFd_, (sockaddr*)&addr, sizeof addr) != 0 || listen(listenFd_, 16) != 0) {
         fprintf(stderr, "[liveprobe] bind %s: %s\n", path_.c_str(), strerror(errno));
@@ -546,7 +585,18 @@ void Server::run() {
             }
         }
     }
-    for (auto& c : clients) close(c.fd);
+    // closing: tell subscribers about the instances that went away, then hang up
+    std::string bye;
+    for (auto& kv : known)
+        if (!hub.findSerial(kv.first)) bye += "{\"event\":\"instance_removed\",\"instance\":" + kv.second.json + "}\n";
+    const double until = monoNow() + 0.2;
+    for (auto& c : clients) {
+        if (!c.closing && c.session.events && !bye.empty()) {
+            c.out += bye;
+            flushBlocking(c, until);
+        }
+        close(c.fd);
+    }
 }
 
 }  // namespace liveprobe

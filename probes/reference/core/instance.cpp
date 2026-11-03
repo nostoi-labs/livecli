@@ -87,12 +87,12 @@ Identity Instance::identity() const {
 
 // ---------------------------------------------------------------- audio thread
 
-void Instance::pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos) {
+void Instance::pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos, double t) {
     if (frames <= 0 || !l) return;
     BlockInfo bi;
     bi.frames = frames;
     bi.channels = r ? 2 : 1;
-    bi.t = monoNow();
+    bi.t = t >= 0 ? t : monoNow();
     bi.samplePos = samplePos;
     bi.sampleRate = sampleRate;
     ring_.write(l, r, frames, bi);
@@ -121,7 +121,12 @@ int Instance::analyze() {
         int off = 0;
         while (off < bi.frames) {
             int n = std::min(bi.frames - off, tickLen_ - cur_.n);
-            processPiece(bufL_.data() + off, bufR_.data() + off, n, bi.t + off / sr_);
+            const double t = bi.t + off / sr_;
+            // split at whole seconds of the server clock, so the 1-second summaries of two instances
+            // that see the same samples (pre/post on one track) hold the same samples, to a few frames
+            const int toSecond = (int)std::ceil((std::floor(t) + 1.0 - t) * sr_);
+            if (toSecond >= 1 && toSecond < n) n = toSecond;
+            processPiece(bufL_.data() + off, bufR_.data() + off, n, t);
             off += n;
         }
         total += bi.frames;

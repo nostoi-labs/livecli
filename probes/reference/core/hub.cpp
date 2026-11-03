@@ -86,11 +86,16 @@ void Hub::remove(const std::shared_ptr<Instance>& inst) {
         empty = instances_.empty();
     }
     if (empty) {
-        // the server sends instance_removed on its next round; give it that round before closing
-        if (server_) usleep(150 * 1000);
+        // the server sends the last instance_removed events itself while closing
         server_.reset();
         analysis_.reset();
     }
+}
+
+void Hub::shutdown() {
+    std::lock_guard<std::mutex> life(lifecycle_);
+    server_.reset();
+    analysis_.reset();
 }
 
 std::vector<std::shared_ptr<Instance>> Hub::all() const {

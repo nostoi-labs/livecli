@@ -51,8 +51,8 @@ public:
     uint32_t version() const { return version_.load(std::memory_order_acquire); }
 
     // ---- audio thread ----
-    /// Only memcpy's into the ring. `r` null for mono.
-    void pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos);
+    /// Only memcpy's into the ring. `r` null for mono. `t` < 0: now (tests pass their own clock).
+    void pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos, double t = -1);
 
     // ---- analysis thread ----
     /// Drains the ring and runs the analysis. Returns frames processed.
