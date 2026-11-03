@@ -102,6 +102,7 @@ class Clip:
         self.is_arrangement_clip = False
         self.notes = []
         self.envs = {}
+        self.warp_markers = []
 
     def automation_envelope(self, p):
         return self.envs.get(id(p))
@@ -185,6 +186,7 @@ class Track:
         self.mixer_device = Mixer(n_sends)
         self.mute = self.solo = self.arm = False
         self.can_be_armed, self.has_midi_input, self.is_foldable, self.is_grouped = True, midi, False, False
+        self.implicit_arm = False
         self.current_monitoring_state, self.is_frozen, self.fold_state = 1, False, False
         self.group_track = None
         self.output_meter_left = self.output_meter_right = 0.5
@@ -249,9 +251,10 @@ class Song:
         self.root_note, self.scale_name = 0, "Major"
         eq = Device("EQ Eight", "Eq8", [Param("1 Frequency A", 0.5, fmt=hz_fmt), Param("1 Gain A", 0.5, fmt=lambda v: "%.1f dB" % (-15 + 30 * v)),
                                         Param("1 Filter Type A", 3, 0, 7, True, choices=["48", "12", "LS", "Bell", "Notch", "HS", "12h", "48h"])])
+        drift = Device("Drift", "Drift", [Param("Env 1 Decay", 0.3, fmt=lambda v: ("%.0f ms" % (v * 2000)) if v < 0.5 else ("%.2f s" % (v * 2)))])
         plugin = Device("soothe2", "AuPluginDevice", [Param("depth", 0.5, fmt=lambda v: "%.1f" % (v * 20))])
         rack = Device("Glue Rack", "AudioEffectGroupDevice", chains=[Chain("Chain", [Device("Glue Compressor", "GlueCompressor")])])
-        self.tracks = [Track("Vox Main", [eq, plugin]), Track("Bass", [rack]), Track("Synth", [], midi=True)]
+        self.tracks = [Track("Vox Main", [eq, plugin]), Track("Bass", [rack]), Track("Synth", [drift], midi=True)]
         self.return_tracks = [Track("A-Reverb", [Device("Reverb", "Reverb")]), Track("B-Delay")]
         self.master_track = Track("Main", [Device("Limiter", "Limiter")])
         self.scenes = [Scene("Intro"), Scene("Drop")]

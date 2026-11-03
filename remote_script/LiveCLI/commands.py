@@ -143,6 +143,8 @@ def _num(txt):
     if not m:
         return None
     v = float(m.group(0).replace(",", "."))
+    if re.search(r"\d\s*ms\b", t):     # times in seconds as the base unit: '600 ms' < '1.00 s'
+        return v / 1000.0
     if re.search(r"\d\s*k(hz)?\b", t):
         v *= 1000
     return v
@@ -312,6 +314,12 @@ def c_set_song(cs, req):
         s.loop_length = float(req["loop_length"])
     if "position" in req:
         s.current_song_time = float(req["position"])
+    if req.get("back_to_arranger"):
+        # Live's "Back to Arrangement": every track that deviates goes back to playing the arrangement
+        for t in s.tracks:
+            if getattr(t, "back_to_arranger", False):
+                t.back_to_arranger = False
+        s.back_to_arranger = False
     if "root_note" in req:
         s.root_note = int(req["root_note"])
     if "scale_name" in req:
@@ -334,6 +342,7 @@ def c_tracks(cs, req):
         if ref[0] == "t":
             e.update({"kind": "group" if t.is_foldable else ("midi" if t.has_midi_input else "audio"),
                       "arm": t.arm if t.can_be_armed else None,
+                      "implicit_arm": _safe(t, "implicit_arm") if t.can_be_armed else None,
                       "input": _name(t, "input_routing_type"), "input_channel": _name(t, "input_routing_channel"),
                       "monitor": ["in", "auto", "off"][t.current_monitoring_state] if t.can_be_armed else None,
                       "group": t.group_track.name if t.is_grouped else None,

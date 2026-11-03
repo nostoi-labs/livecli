@@ -76,6 +76,12 @@ class LiveCommands(unittest.TestCase):
         code, out, _ = run("set", "vox", "eq", "Frequency", "1.5 kHz")
         self.assertIn("1.50 kHz", out)
 
+    def test_set_time_units(self):
+        code, out_, _ = run("set", "synth", "drift", "Env 1 Decay", "30 ms")
+        self.assertIn("-> 30 ms", out_)
+        code, out_, _ = run("set", "synth", "drift", "Env 1 Decay", "1.5 s")
+        self.assertIn("-> 1.50 s", out_)
+
     def test_set_plugin_by_readback(self):
         code, out, _ = run("set", "vox", "soothe2", "depth", "4")
         self.assertEqual(code, 0, out)
@@ -261,6 +267,17 @@ class LiveCommands(unittest.TestCase):
                          (False, False, False, False, False))
         self.assertFalse(SONG.tracks[-1].arm)
         run("track-delete", r["track"])
+
+    def test_bounce_refuses_with_implicit_arm(self):
+        SONG.stop_playing()
+        SONG.tracks[2].implicit_arm = True            # a selected MIDI track, auto-armed by Live
+        n = len(SONG.tracks)
+        code, out_, err = run("bounce", "bass", "2", "1")
+        SONG.tracks[2].implicit_arm = False
+        self.assertEqual(code, 1)
+        self.assertIn("still armed", err)
+        self.assertFalse(SONG.record_mode)
+        self.assertEqual(len(SONG.tracks), n)          # the empty bounce track was removed
 
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)

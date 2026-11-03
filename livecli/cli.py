@@ -288,6 +288,12 @@ def c_continue(a):
     out(True, "playing")
 
 
+@command("back-to-arrangement", "back-to-arrangement", "Live's Back to Arrangement button", "transport")
+def c_back(a):
+    call("set_song", back_to_arranger=True)
+    out(True, "back to arrangement")
+
+
 @command("stop-clips", "stop-clips", "stop all session clips", "transport")
 def c_stop_clips(a):
     out(call("stop_clips"), "clips stopped")
@@ -752,6 +758,7 @@ def c_bounce(a):
     beats_per_bar = n * 4.0 / d
     start, end = (start_bar - 1) * beats_per_bar, (start_bar - 1 + bars) * beats_per_bar
     armed = [t["ref"] for t in ts if t.get("arm")]
+    selected_before = None
     new = call("track_create", kind="audio", name=name, index=-1)
     ref = new["ref"]
     old = {k: s_[k] for k in ("position", "loop", "loop_start", "loop_length", "punch_in", "punch_out")}
@@ -765,7 +772,18 @@ def c_bounce(a):
     try:
         for r_ in armed:
             call("track_set", track=r_, arm=False)
+        # select the bounce track: Live's automatic arm follows the selected MIDI track, and a track that is
+        # armed in any way would be recorded too (overwriting its clips in the punch region)
+        call("select", track=ref)
         call("track_set", track=ref, arm=True)
+        time.sleep(0.2)
+        still = [t_["name"] for t_ in tracks() if t_["ref"] != ref and (t_.get("arm") or t_.get("implicit_arm"))]
+        if still:
+            for r_ in armed:
+                call("track_set", track=r_, arm=True)
+            call("track_delete", track=ref)
+            ref = None
+            raise LiveError("not recording: these tracks are still armed and would be recorded too: %s" % ", ".join(still))
         # punch in/out on the loop region: Live itself records exactly from start to end
         # (punch uses the loop brace; the loop switch stays off so playback doesn't jump back)
         call("set_song", loop=False, loop_start=start, loop_length=end - start, punch_in=True, punch_out=True)
@@ -785,9 +803,10 @@ def c_bounce(a):
     finally:
         call("stop")
         call("record", on=False)
-        call("track_set", track=ref, arm=False)
-        for r_ in armed:
-            call("track_set", track=r_, arm=True)
+        if ref is not None:
+            call("track_set", track=ref, arm=False)
+            for r_ in armed:
+                call("track_set", track=r_, arm=True)
         call("set_song", **old)
     time.sleep(0.5)
     clips = call("arrangement", track=ref)
@@ -795,9 +814,16 @@ def c_bounce(a):
             "file": clips[-1].get("file") if clips else None}
     if len(clips) == 1:
         c = call("clip_set", track=ref, arr=0)
-        spb = 60.0 / s_["tempo"]          # recorded at the song tempo: beats in the file = beats in the song
-        info["file_offset_s"] = round(c["start_marker"] * spb, 4)
-        info["duration_s"] = round((c["end_marker"] - c["start_marker"]) * spb, 4)
+        spb = 60.0 / s_["tempo"]          # recorded at the song tempo
+        # the clip's beat 0 is not the file's first sample: the warp markers map clip beats to file seconds
+        wm = call("warp_markers", track=ref, arr=0)
+        if len(wm) >= 2 and wm[1]["beat"] != wm[0]["beat"]:
+            spb_file = (wm[1]["sample_time"] - wm[0]["sample_time"]) / (wm[1]["beat"] - wm[0]["beat"])
+        else:
+            spb_file = spb
+        b0, t0 = (wm[0]["beat"], wm[0]["sample_time"]) if wm else (0.0, 0.0)
+        info["file_offset_s"] = round(t0 + (c["start_marker"] - b0) * spb_file, 6)
+        info["duration_s"] = round((c["end_marker"] - c["start_marker"]) * spb_file, 6)
     text = "bounced to %s (%s): %s" % (ref, name, info["file"] or "no clip recorded")
     if "file_offset_s" in info:
         text += "\n  the region is %.3f s long and starts %.3f s into the file (the rest is pre-roll): ffmpeg -ss %.3f -t %.3f" % (
@@ -1287,6 +1313,99 @@ def c_sync(a):
     if mt["spread_ms"] > 1.5:
         print("  warning: the track's transients are spread (swing, humanized or off-grid notes): use a straight part, "
               "like a kick on quarters, for a precise value")
+
+
+def file_onsets(path, offset_s, duration_s, sr=48000, refractory_s=0.05):
+    """Transient times (s, from offset) in an audio file, standard library + ffmpeg. An onset is the first sample whose
+    1 ms envelope reaches half (-6 dB) of the transient's peak; refractory 50 ms."""
+    import array
+    import subprocess
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.6f" % offset_s, "-t", "%.6f" % duration_s, "-i", path,
+                          "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"], capture_output=True).stdout
+    x = array.array("f")
+    x.frombytes(raw[: len(raw) // 4 * 4])
+    n = len(x)
+    if n == 0:
+        raise LiveError("could not decode %s (is ffmpeg installed?)" % path)
+    # high-pass ~150 Hz first: the attack of a kick or click is rich in highs, the ripple of low notes is not
+    import math as _m
+    rc = 1.0 / (2 * _m.pi * 150.0)
+    alpha = rc / (rc + 1.0 / sr)
+    hp, y, xp = [0.0] * n, 0.0, 0.0
+    for k in range(n):
+        y = alpha * (y + x[k] - xp)
+        xp = x[k]
+        hp[k] = abs(y)
+    w = max(1, sr // 500)                    # 2 ms envelope
+    env = [0.0] * n
+    acc = 0.0
+    for k in range(n):
+        acc += hp[k]
+        if k >= w:
+            acc -= hp[k - w]
+        env[k] = acc / w
+    top = max(env)
+    if top <= 0:
+        return []
+    thr = top * 0.2
+    refr, look = int(refractory_s * sr), int(0.01 * sr)
+    out_, k = [], 0
+    while k < n:
+        if env[k] >= thr and (k == 0 or env[k - 1] < thr):
+            peak = max(env[k: k + look])
+            j = k
+            while j > 0 and env[j - 1] >= 0.5 * peak and k - j < look:
+                j -= 1
+            while env[j] < 0.5 * peak:
+                j += 1
+            out_.append(j / float(sr))
+            k += refr
+        else:
+            k += 1
+    return out_
+
+
+@command("grid", "grid <track> [bars] [start-bar] [--grid 1/16] [--keep]", "record a track (bounce) and measure where its "
+         "transients fall against Live's grid: median offset, spread. Works with any probe or none", "audio")
+def c_grid(a):
+    need(a, 1, "grid <track> [bars] [start-bar]")
+    grid = a[a.index("--grid") + 1] if "--grid" in a else "1/16"
+    pos = [x for k, x in enumerate(a[1:], 1) if not x.startswith("--") and a[k - 1] != "--grid"]
+    bars = float(pos[0]) if pos else 4.0
+    start_bar = float(pos[1]) if len(pos) > 1 else 9.0
+    t = track(a[0])
+    s_ = call("song")
+    global JSON
+    js, JSON = JSON, True                    # run bounce quietly and capture its result
+    buf = __import__("io").StringIO()
+    import contextlib
+    with contextlib.redirect_stdout(buf):
+        c_bounce([t["ref"], str(start_bar), str(bars), "LiveCLI grid %s" % t["name"]])
+    JSON = js
+    b = json.loads(buf.getvalue())
+    try:
+        if not b.get("file") or "file_offset_s" not in b:
+            raise LiveError("bounce did not produce a single clip")
+        # at most one transient per grid step: anything closer than 60% of a step is the same note
+        times = file_onsets(b["file"], b["file_offset_s"], b["duration_s"],
+                            refractory_s=0.6 * GRIDS[grid] * 60.0 / s_["tempo"])
+    finally:
+        if "--keep" not in a:
+            call("track_delete", track=b["track"])
+    g = GRIDS[grid]
+    beat_s = 60.0 / s_["tempo"]
+    offs = []
+    for tt in times:
+        beats = tt / beat_s
+        offs.append((beats - round(beats / g) * g) * beat_s * 1000.0)
+    if not offs:
+        raise LiveError("no transients found in the recording")
+    med = statistics.median(offs)
+    mad = statistics.median([abs(x - med) for x in offs])
+    res = {"track": t["name"], "bars": bars, "start_bar": start_bar, "grid": grid, "onsets": len(offs),
+           "median_ms": round(med, 3), "spread_ms": round(mad, 3), "file": b["file"] if "--keep" in a else None}
+    out(res, "%s: %d transients in %g bars, median %+.2f ms from the %s grid (spread %.2f ms)" % (
+        t["name"], len(offs), bars, med, grid, mad))
 
 
 @command("latency", "latency <track> <device> [seconds] [--keep]", "real latency of a device or hardware insert, "

@@ -72,6 +72,8 @@ def parse_number(t):
     if not m:
         return None
     v = float(m.group(0).replace(",", "."))
+    if re.search(r"\d\s*ms\b", t):     # times in seconds as the base unit: '600 ms' < '1.00 s'
+        return v / 1000.0
     if re.search(r"\d\s*k(hz)?\b", t) or re.search(r"\dk$", t):
         v *= 1000
     return v
