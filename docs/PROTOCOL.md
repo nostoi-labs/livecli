@@ -93,7 +93,7 @@ If the server does not support `compare`, the client computes `gain_db` itself f
 
 ### 5.1 `hello`
 → `{"cmd":"hello"}`
-← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","onsets","pulse","reset","subscribe","label"]}`
+← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","onsets","pulse","signal","reset","subscribe","label"]}`
 
 ### 5.2 `list`
 → `{"cmd":"list"}`
@@ -159,6 +159,14 @@ The only exception to "the probe never alters audio": on explicit request, for a
   7. No song position or tempo from the host: `bad_request` ("no pulses"), nothing is emitted. No audio in the last second: `busy`. A request with the transport stopped is accepted (`"playing": false`) and waits for play until its deadline.
   8. The audio thread takes no locks and allocates nothing.
   Hosts that send the track to speakers or hardware will play the clicks: keep the level low and ask the user first.
+
+### 5.12 `signal` (optional, capability `signal`)
+Test signals for measuring a chain (for example the frequency response, noise and distortion of a hardware insert). Same safety rules as `pulse` (§5.11): explicit request only, never saved, ends by itself, hard ceiling -6 dBFS, stops with the transport, on `stop`, on deactivation.
+→ `{"cmd":"signal","uid":"<uid>","kind":"pink","seconds":5,"level_db":-20,"mode":"replace"}`
+← `{"ok":true,"uid":"...","until_t":1240.2,"level_db":-20.0}`
+- `kind`: `"pink"` (pink noise, RMS at `level_db`), `"sine"` (with `"freq":1000`, peak at `level_db`), `"sweep"` (log sine sweep, `"from":20,"to":20000`, over `seconds`, peak at `level_db`), `"silence"` (zeros, for the noise floor of what follows).
+- `mode`: `"replace"` (default for `signal`) or `"add"`. Fades of 10 ms at start and end, no clicks.
+- `seconds` 0.5…30. Unlike `pulse` it does not need the transport to play (hardware inserts are measured with Live stopped too, as long as the track is processed); if the host stops calling the plugin the clock deadline still ends it.
 
 ## 6. Plugin requirements (VST3)
 - Stereo in/out (mono variant optional). Pass-through, zero latency, no tail.

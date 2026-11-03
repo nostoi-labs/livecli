@@ -324,6 +324,78 @@ class LiveCommands(unittest.TestCase):
         code, out_, _ = run("completion", "zsh")
         self.assertIn("compdef _live live", out_)
 
+    def test_midi_tools(self):
+        run("clip", "new", "synth", "2", "4")
+        self.assertEqual(run("pattern", "synth", "2", "x...X...x.x.x...", "pitch=36")[0], 0)
+        n = json.loads(run("notes", "synth", "2")[1])
+        self.assertEqual([x["start"] for x in n], [0.0, 1.0, 2.0, 2.5, 3.0])
+        self.assertEqual(n[1]["velocity"], 127.0)
+        run("euclid", "synth", "2", "3", "8", "step=1/8", "pitch=38")
+        n = json.loads(run("notes", "synth", "2")[1])
+        self.assertEqual(len(n), 3)
+        run("notes-edit", "synth", "2", "ratchet", "n=2")
+        self.assertEqual(len(json.loads(run("notes", "synth", "2")[1])), 6)
+        sys_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps([{"pitch": 60, "start": 0, "duration": 1}, {"pitch": 64, "start": 0, "duration": 1},
+                                            {"pitch": 67, "start": 0, "duration": 1}]))
+        try:
+            run("set-notes", "synth", "2")
+        finally:
+            sys.stdin = sys_stdin
+        run("notes-edit", "synth", "2", "arp", "mode=up", "rate=1/8")
+        n = sorted(json.loads(run("notes", "synth", "2")[1]), key=lambda x: x["start"])
+        self.assertEqual([x["pitch"] for x in n], [60, 64])          # 1 beat at 1/8 = two steps
+        run("notes-edit", "synth", "2", "scale", "steps=2")          # C major: C -> E, E -> G
+        n = sorted(json.loads(run("notes", "synth", "2")[1]), key=lambda x: x["start"])
+        self.assertEqual([x["pitch"] for x in n], [64, 67])
+        self.assertEqual(run("notes-edit", "synth", "2", "humanize", "timing=0.01")[0], 0)
+        run("clip", "delete", "synth", "2")
+
+    def test_transpose_in_scale(self):
+        from livecli import cmd_midi as M
+        major = [0, 2, 4, 5, 7, 9, 11]
+        self.assertEqual(M.transpose_in_scale(60, 1, 0, major), 62)
+        self.assertEqual(M.transpose_in_scale(71, 1, 0, major), 72)
+        self.assertEqual(M.transpose_in_scale(60, -1, 0, major), 59)
+        self.assertEqual(M.euclid(3, 8), [1, 0, 0, 1, 0, 0, 1, 0])
+
+    def test_als_lint_and_diff(self):
+        import gzip as _gz
+
+        def ext(name, out_ch, in_ch, on=True):
+            return ('<ProxyAudioEffectDevice><UserName Value="%s"/><On><Manual Value="%s"/></On>'
+                    '<OutputHelper><UpperDisplayString Value="Ext. Out"/><LowerDisplayString Value="%s"/></OutputHelper>'
+                    '<InputHelper><UpperDisplayString Value="Ext. In"/><LowerDisplayString Value="%s"/></InputHelper>'
+                    '</ProxyAudioEffectDevice>' % (name, "true" if on else "false", out_ch, in_ch))
+
+        def track(name, devs, tag="AudioTrack", sample=None):
+            smp = '<Path Value="%s"/>' % sample if sample else ""
+            return ('<%s><Name><EffectiveName Value="%s"/></Name><DeviceChain><AudioOutputRouting><Target Value="x"/>'
+                    '<UpperDisplayString Value="Main"/><LowerDisplayString Value=""/></AudioOutputRouting>'
+                    '<DeviceChain><Devices>%s</Devices></DeviceChain></DeviceChain>%s</%s>' % (tag, name, devs, smp, tag))
+
+        def als(path, tracks, tempo=120):
+            xml = ('<Ableton Creator="Ableton Live 12.4.16"><LiveSet><Tracks>%s</Tracks><MainTrack><Name><EffectiveName Value="Main"/>'
+                   '</Name><DeviceChain><Mixer><Tempo><Manual Value="%s"/></Tempo></Mixer><DeviceChain><Devices/></DeviceChain>'
+                   '</DeviceChain></MainTrack></LiveSet></Ableton>' % ("".join(tracks), tempo))
+            with _gz.open(path, "wb") as fh:
+                fh.write(xml.encode())
+
+        a_ = os.path.join(TMP, "a.als")
+        b_ = os.path.join(TMP, "b.als")
+        als(a_, [track("Bass", ext("Fatso", "11/12", "11/12")), track("Vox", ext("Neve", "11/12", "17/18"), sample="/nope/vox.wav")])
+        als(b_, [track("Bass", ext("Fatso", "11/12", "11/12", on=False)), track("Keys", "")], tempo=124)
+        code, r = run_json("als-lint", a_)
+        msgs = [i["issue"] for i in r["issues"]]
+        self.assertTrue(any("hardware" in i["name"] and "Fatso" in i["issue"] and "Neve" in i["issue"] for i in r["issues"]))
+        self.assertTrue(any("missing sample" in m for m in msgs))
+        code, d = run_json("als-diff", a_, b_)
+        whats = {(x["what"], x["track"]) for x in d}
+        self.assertIn(("tempo", ""), whats)
+        self.assertIn(("track removed", "Vox"), whats)
+        self.assertIn(("track added", "Keys"), whats)
+        self.assertIn(("device on/off", "Bass"), whats)
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 

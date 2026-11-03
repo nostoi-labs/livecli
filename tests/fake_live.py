@@ -249,6 +249,7 @@ class Song:
         self.punch_in = self.punch_out = False
         self.can_undo, self.can_redo = True, False
         self.root_note, self.scale_name = 0, "Major"
+        self.scale_intervals = [0, 2, 4, 5, 7, 9, 11]
         eq = Device("EQ Eight", "Eq8", [Param("1 Frequency A", 0.5, fmt=hz_fmt), Param("1 Gain A", 0.5, fmt=lambda v: "%.1f dB" % (-15 + 30 * v)),
                                         Param("1 Filter Type A", 3, 0, 7, True, choices=["48", "12", "LS", "Bell", "Notch", "HS", "12h", "48h"])])
         drift = Device("Drift", "Drift", [Param("Env 1 Decay", 0.3, fmt=lambda v: ("%.0f ms" % (v * 2000)) if v < 0.5 else ("%.2f s" % (v * 2)))])

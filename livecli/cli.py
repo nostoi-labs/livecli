@@ -2245,7 +2245,7 @@ def load_extensions():
 
 
 def _load_modules():
-    from . import cmd_setup  # noqa: F401  (registers its commands)
+    from . import cmd_setup, cmd_midi, cmd_offline  # noqa: F401  (they register their commands)
 
 
 def main(argv=None):
