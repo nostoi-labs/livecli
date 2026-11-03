@@ -1129,7 +1129,8 @@ def c_latency(a):
             print("  difference %+d samples (%+.2f ms): %s" % (res["difference_samples"], dms,
                   "add %.2f ms to the device's Hardware Latency" % dms if dev["class"] == "ProxyAudioEffectDevice" and dms > 0 else
                   "remove %.2f ms from the device's Hardware Latency" % -dms if dev["class"] == "ProxyAudioEffectDevice" else
-                  "Live's delay compensation is off by this much for this device"))
+                  "the signal after it is late by this much and Live does not compensate it (fine for a device that "
+                  "delays on purpose, like Delay or Align Delay; for a plugin it means unreported latency)"))
     print("  correlation %.2f, ambiguity %.2f, alignment %s" % (r.get("correlation_peak") or 0, r.get("ambiguity") or 0, r.get("aligned")))
     for w in warn:
         print("  warning: " + w)
