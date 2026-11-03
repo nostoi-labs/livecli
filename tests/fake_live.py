@@ -42,14 +42,37 @@ class Device:
         self.can_have_chains = bool(chains)
         self.latency_in_samples, self.latency_in_ms = 0, 0.0
         self.can_compare_ab, self.is_using_compare_preset_b = True, False
+        self.variation_count, self.selected_variation_index, self.visible_macro_count = 0, -1, 0
+        self.can_have_drum_pads = False
+
+    def insert_chain(self, idx):
+        self.chains.insert(idx, Chain("Chain", []))
+        self.can_have_chains = True
+
+    def store_variation(self):
+        self.variation_count += 1
 
     def save_preset_to_compare_ab_slot(self):
         pass
 
 
+class ChainMixer:
+    def __init__(self):
+        self.volume = Param("Chain Volume", 0.85, 0, 1, fmt=db_fmt)
+        self.panning = Param("Chain Pan", 0.0, -1, 1, fmt=lambda v: "C" if abs(v) < 0.01 else
+                             ("%dL" % round(-v * 50) if v < 0 else "%dR" % round(v * 50)))
+        self.sends = []
+
+
 class Chain:
     def __init__(self, name, devices):
         self.name, self.devices = name, devices
+        self.mute = self.solo = False
+        self.color = 0
+        self.mixer_device = ChainMixer()
+
+    def insert_device(self, name, idx):
+        self.devices.insert(idx, Device(name, name.replace(" ", "")))
 
     def delete_device(self, i):
         del self.devices[i]
@@ -73,7 +96,28 @@ class Clip:
         self.is_midi_clip, self.is_audio_clip = midi, not midi
         self.is_playing = self.is_triggered = self.muted = False
         self.start_time, self.end_time = 0.0, length
+        self.start_marker, self.end_marker = 0.0, length
+        self.launch_mode = self.launch_quantization = 0
+        self.legato, self.velocity_amount, self.has_envelopes = False, 0.0, False
+        self.is_arrangement_clip = False
         self.notes = []
+        self.envs = {}
+
+    def automation_envelope(self, p):
+        return self.envs.get(id(p))
+
+    def create_automation_envelope(self, p):
+        self.envs[id(p)] = Envelope()
+        return self.envs[id(p)]
+
+    def clear_envelope(self, p):
+        self.envs.pop(id(p), None)
+
+    def get_all_notes_extended(self):
+        return list(self.notes)
+
+    def apply_note_modifications(self, notes):
+        self.notes = list(notes)
 
     def get_notes_extended(self, *a):
         return list(self.notes)
@@ -83,6 +127,21 @@ class Clip:
 
     def add_new_notes(self, specs):
         self.notes += [MidiNote(s.pitch, s.start_time, s.duration, s.velocity, s.mute) for s in specs]
+
+
+class Envelope:
+    def __init__(self):
+        self.steps = []
+
+    def insert_step(self, t, d, v):
+        self.steps.append((t, d, v))
+
+    def value_at_time(self, t):
+        v = 0.0
+        for st, d, val in self.steps:
+            if st < t:
+                v = val
+        return v
 
 
 class ClipSlot:
@@ -114,6 +173,10 @@ class Mixer:
         self.panning = Param("Track Panning", 0.0, -1, 1, fmt=lambda v: "C" if abs(v) < 0.01 else
                              ("%dL" % round(-v * 50) if v < 0 else "%dR" % round(v * 50)))
         self.sends = [Param("Send %d" % i, 0.0, 0, 1, fmt=db_fmt) for i in range(n_sends)]
+        self.track_activator = Param("Speaker On", 1.0, 0, 1, True, choices=["Off", "On"])
+        self.panning_mode, self.crossfade_assign = 0, 1
+        self.left_split_stereo = Param("Left Split", -1.0, -1, 1, fmt=self.panning.fmt)
+        self.right_split_stereo = Param("Right Split", 1.0, -1, 1, fmt=self.panning.fmt)
 
 
 class Track:
@@ -137,6 +200,13 @@ class Track:
 
     def delete_device(self, i):
         del self.devices[i]
+
+    def insert_device(self, name, idx):
+        self.devices.insert(idx, Device(name, name.replace(" ", "")))
+
+    def duplicate_device(self, i):
+        import copy
+        self.devices.insert(i + 1, copy.copy(self.devices[i]))
 
     def stop_all_clips(self):
         for s in self.clip_slots:
@@ -203,6 +273,9 @@ class Song:
 
     def undo(self):
         self.can_redo = True
+
+    def re_enable_automation(self):
+        pass
 
     def begin_undo_step(self):
         self.undo_steps = getattr(self, "undo_steps", 0) + 1

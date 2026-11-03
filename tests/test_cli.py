@@ -210,6 +210,45 @@ class LiveCommands(unittest.TestCase):
         self.assertEqual(SONG.undo_steps, n + 1)
         run("delete", "m", "utility")
 
+    def test_insert_duplicate_rack_chain(self):
+        n = len(SONG.tracks[1].devices)
+        self.assertEqual(run("insert", "bass", "Utility")[0], 0)
+        self.assertEqual(run("duplicate", "bass", "utility")[0], 0)
+        self.assertEqual(len(SONG.tracks[1].devices), n + 2)
+        del SONG.tracks[1].devices[n:]
+        code, r = run_json("rack", "bass", "glue rack")
+        self.assertEqual(r["chains"][0]["devices"], ["Glue Compressor"])
+        code, r = run_json("chain", "bass", "0.0", "volume=-6", "pan=20L", "mute=on")
+        self.assertEqual((r["volume"], r["pan"], r["mute"]), ("-6.0 dB", "20L", True))
+        run("chain", "bass", "0.0", "mute=off")
+
+    def test_clip_props_and_envelope(self):
+        run("clip", "new", "synth", "1", "8")
+        code, r = run_json("clip-set", "synth", "1", "launch_mode=gate", "launch_quantization=1/4", "legato=on")
+        self.assertEqual((r["launch_mode"], r["launch_quantization"], r["legato"]), ("gate", "1/4", True))
+        code, r = run_json("envelope-set", "synth", "1", "mixer", "volume", "0:4=-6dB", "4:4=0dB")
+        self.assertEqual(r["steps"], 2)
+        code, r = run_json("envelope", "synth", "1", "mixer", "volume", "3")
+        self.assertTrue(r["exists"])
+        self.assertEqual(r["points"][0]["text"], "-6.0 dB")
+        run("clip", "delete", "synth", "1")
+
+    def test_snapshot_diff_restore(self):
+        run("snapshot", "t1")
+        run("volume", "bass", "-12")
+        code, d = run_json("diff", "t1")
+        self.assertEqual(len(d["changed"]), 1)
+        run("restore", "t1")
+        code, d = run_json("diff", "t1")
+        self.assertEqual(d["changed"], [])
+
+    def test_plugins_inventory(self):
+        code, r = run_json("plugins", "--refresh")
+        names = {(p["vendor"], p["name"]): p for p in r["plugins"]}
+        self.assertIn(("Loudline", "Loudline Probe"), names)
+        self.assertEqual(names[("Loudline", "Loudline Probe")]["category"], "analyzer")
+        self.assertEqual(names[("Live", "Utility")]["category"], "stereo")
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 

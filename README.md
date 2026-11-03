@@ -42,14 +42,17 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 
 `live help` lists everything; `live help <command>` shows one command. The groups are:
 
-- **Info:** `ping`, `song`, `cpu`, `impact` (CPU impact per track), `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`
-- **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`
-- **Tracks and mixer:** `track-new`, `track-delete`, `track-duplicate`, `track-rename`, `track-color`, `solo`, `mute`, `arm`, `monitor`, `volume`, `pan`, `send`
-- **Devices:** `set`, `on`, `off`, `ab` (Live 12 A/B compare), `load`, `delete`, `move`, `rename`, `replace`, `mode`. `devices` also shows the latency Live assumes for each device.
-- **Scenes and clips:** `scene ...`, `clip ...`, `set-notes`
-- **Browser:** `search`, `browse`
+- **Info:** `ping`, `song`, `cpu`, `impact` (CPU impact per track), `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`, `automation` (automated and overridden parameters), `events` (what changes while it happens)
+- **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`, `re-enable-automation`
+- **Tracks and mixer:** `track-new`, `track-delete`, `track-duplicate`, `track-rename`, `track-color`, `solo`, `mute`, `arm`, `monitor`, `volume`, `pan`, `send`, `pan-mode` (stereo or split), `crossfade`, `activator`, `cue`
+- **Devices:** `set`, `on`, `off`, `ab` (Live 12 A/B compare), `insert` (a Live device by name, no browser), `duplicate`, `load`, `delete`, `move`, `rename`, `replace`, `mode`. `devices` also shows the latency Live assumes for each device.
+- **Racks:** `rack` (chains with their mixer, macros, variations, Drum Rack pads), `chain` (name, mute, solo, volume, pan of a chain), `chain-new`, `variation store|recall|delete|randomize`, `pad` (mute/solo a Drum Rack pad)
+- **Scenes and clips:** `scene ...`, `clip ...`, `set-notes`, `clip-info`, `clip-set` (launch mode and quantization, legato, markers, loop, warp mode, gain, pitch...), `clip-edit` (quantize, transpose, velocity, crop, duplicate-loop), `warp-markers`, `envelope` / `envelope-set` / `envelope-clear` (clip automation), `arr-add` (copy a session clip, an audio file or a new MIDI clip into the arrangement). `@N` addresses arrangement clips (`live clip delete t3 @2`).
+- **Browser and plugins:** `search`, `browse`, `plugins` (inventory by category and style, see below)
 - **Audio:** `capture` (optional, see below)
 - **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `probe-reset`, `probe-label`
+- **Safety net:** `snapshot [name]` saves every mixer, device and chain value; `diff` shows what changed since (or between two snapshots); `restore <name> [filter]` puts values back, in one undo step.
+- **View and offline:** `show` (bring a track, device or clip into view for the user), `view` (Session, Arranger, Detail/Clip...), `als <file.als>` (read a set without opening it).
 - **Other:** `inspect` (what Live's API offers on the song, a track, mixer, device, parameter, clip or scene: properties with values and methods; read-only), `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
 - **Italian aliases:** `stato`, `tracce`, `parametri`, `imposta`, `accendi`/`spegni`, `carica`, `cancella`, `sposta`, `sostituisci`, `cerca`, `livelli`, `mandata`, `locatori`, `vai`, `modo`, `cattura`, `sonde`, `misura`, `confronta`, …
 
@@ -63,6 +66,20 @@ References are short:
 - Not reachable from Live's API (Live 12.4): saving, opening or exporting the set, preferences (audio device, buffer, sample rate, driver error compensation), the Delay Compensation switch, track delay, the Hardware Latency of External Audio Effect, creating group tracks. Use `inspect` to check your Live version.
 - `live --json <command>` always returns JSON. Errors come back as `{"ok": false, "error": "..."}` with exit code 1.
 - `live meters` reads Live's own meters (0 to 1 scale, not dBFS). For real levels use probes.
+
+## Which plugin should I use? (`live plugins`)
+
+`live plugins` lists every plugin Live sees (from its browser, so plugins packed in shells like Waves are expanded) plus Live's own devices, grouped by category with style and emulated hardware from [livecli/catalog.json](livecli/catalog.json). With Live closed it reads the installed AU and VST3 bundles instead. The inventory is cached for a week (`--refresh` to rebuild).
+
+```
+$ live plugins la-2a
+compressor (6)
+  Universal Audio (UADx) / UADx LA-2A Gray Compressor  AUv2+VST3  Teletronix LA-2A leveling amplifier | opto, tube, smooth, vocals, bass
+  Waves / CLA-2A                                       AUv2+VST3  Teletronix LA-2A leveling amplifier | ...
+  Universal Audio (UADx) / UADx Empirical Labs Distressor     ...  note: its 'Opt' detector mode gives an opto-like (LA-2A style) curve
+```
+
+So an agent can answer "what would you put on this vocal for an LA-2A feel, and what are my options?" from the plugins the user actually owns. The catalog is a list of regex rules (category, styles, emulates, notes); anything it doesn't know shows as `uncategorized`, and the agent can still reason from the name. Pull requests with more plugins are welcome.
 
 ## Probes
 

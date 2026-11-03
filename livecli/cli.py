@@ -3,6 +3,7 @@ import glob
 import importlib.util
 import json
 import os
+import re
 import statistics
 import sys
 import time
@@ -239,10 +240,16 @@ def c_arrangement(a):
               c["name"], " (muted)" if c["muted"] else ""))
 
 
-@command("notes", "notes <track> <slot>", "MIDI notes of a session clip (JSON)", "info")
+def clip_ref(q):
+    """'3' = session slot 3; '@2' = third clip of the arrangement (in time order, see 'live arrangement')."""
+    q = str(q)
+    return {"arr": int(q[1:])} if q.startswith("@") else {"slot": int(q)}
+
+
+@command("notes", "notes <track> <slot|@arr>", "MIDI notes of a clip (JSON); @N = arrangement clip N", "info")
 def c_notes(a):
-    need(a, 2, "notes <track> <slot>")
-    print(json.dumps(call("notes", track=track(a[0])["ref"], slot=int(a[1]))))
+    need(a, 2, "notes <track> <slot|@arr>")
+    print(json.dumps(call("notes", track=track(a[0])["ref"], **clip_ref(a[1]))))
 
 
 @command("search", "search <text> [roots]", "search the browser; roots: user_library,audio_effects,instruments,plugins,"
@@ -672,6 +679,13 @@ def c_scene(a):
 def c_clip(a):
     need(a, 2, "clip fire|stop|new|delete|duplicate|rename <track> <slot> [length|name]")
     op, ref = a[0], track(a[1])["ref"]
+    if len(a) > 2 and a[2].startswith("@"):
+        cr = clip_ref(a[2])
+        if op == "delete":
+            return out(call("clip_delete", track=ref, **cr))
+        if op == "rename":
+            return out(call("clip_set", track=ref, name=" ".join(a[3:]), **cr))
+        raise LiveError("arrangement clips (@N) support: delete, rename (and clip-set, clip-edit)")
     slot = int(a[2]) if len(a) > 2 else None
     if op == "fire":
         return out(call("clip_fire", track=ref, slot=slot))
@@ -688,12 +702,12 @@ def c_clip(a):
     raise LiveError("clip fire|stop|new|delete|duplicate|rename")
 
 
-@command("set-notes", "set-notes <track> <slot> [--add] < notes.json", "write MIDI notes from stdin: "
+@command("set-notes", "set-notes <track> <slot|@arr> [--add] < notes.json", "write MIDI notes from stdin: "
          "[{\"pitch\":60,\"start\":0,\"duration\":0.5,\"velocity\":100}, ...]", "clips")
 def c_set_notes(a):
     need(a, 2, "set-notes <track> <slot> [--add] < notes.json")
     notes = json.load(sys.stdin)
-    out(call("set_notes", track=track(a[0])["ref"], slot=int(a[1]), notes=notes, add="--add" in a))
+    out(call("set_notes", track=track(a[0])["ref"], notes=notes, add="--add" in a, **clip_ref(a[1])))
 
 
 # ================================================================== audio capture
@@ -1134,6 +1148,614 @@ def c_latency(a):
     print("  correlation %.2f, ambiguity %.2f, alignment %s" % (r.get("correlation_peak") or 0, r.get("ambiguity") or 0, r.get("aligned")))
     for w in warn:
         print("  warning: " + w)
+
+
+# ================================================================== clips: properties, editing, automation
+def _kv(items):
+    out_ = {}
+    for it in items:
+        if "=" not in it:
+            raise LiveError("expected key=value, got '%s'" % it)
+        k, v = it.split("=", 1)
+        out_[k.replace("-", "_")] = v
+    return out_
+
+
+def _bool(v):
+    return str(v).lower() in ("on", "true", "yes", "1")
+
+
+@command("clip-info", "clip-info <track> <slot|@arr>", "all properties of a clip (launch, markers, warp, gain...)", "clips")
+def c_clip_info(a):
+    need(a, 2, "clip-info <track> <slot|@arr>")
+    r = call("clip_set", track=track(a[0])["ref"], **clip_ref(a[1]))
+    out(r, "\n".join("  %-20s %s" % (k, v) for k, v in r.items() if v is not None))
+
+
+@command("clip-set", "clip-set <track> <slot|@arr> key=value...", "keys: name color looping muted legato loop_start loop_end "
+         "start_marker end_marker (beats) launch_mode=trigger|gate|toggle|repeat launch_quantization=global|none|1 bar|1/4... "
+         "velocity_amount warping warp_mode=beats|tones|texture|re-pitch|complex|complex pro gain=-3dB pitch_coarse pitch_fine "
+         "ram_mode", "clips")
+def c_clip_set(a):
+    need(a, 3, "clip-set <track> <slot|@arr> key=value...")
+    kw = _kv(a[2:])
+    for k in ("looping", "muted", "legato", "warping", "ram_mode"):
+        if k in kw:
+            kw[k] = _bool(kw[k])
+    for k in ("loop_start", "loop_end", "start_marker", "end_marker", "velocity_amount", "pitch_fine"):
+        if k in kw:
+            kw[k] = float(kw[k])
+    if "pitch_coarse" in kw:
+        kw["pitch_coarse"] = int(kw["pitch_coarse"])
+    r = call("clip_set", track=track(a[0])["ref"], **dict(kw, **clip_ref(a[1])))
+    out(r, "\n".join("  %-20s %s" % (k, v) for k, v in r.items() if v is not None))
+
+
+@command("clip-edit", "clip-edit <track> <slot|@arr> quantize [1/16] [amount%] | transpose <semitones> | velocity <percent> "
+         "| crop | duplicate-loop", "edit a clip's notes or region (one undo step in Live)", "clips")
+def c_clip_edit(a):
+    need(a, 3, "clip-edit <track> <slot|@arr> <op> ...")
+    ref, cr, op = track(a[0])["ref"], clip_ref(a[1]), a[2]
+    kw = {"op": op.replace("-", "_")}
+    if op == "quantize":
+        kw["grid"] = a[3] if len(a) > 3 else "1/16"
+        kw["amount"] = float(a[4].rstrip("%")) / 100.0 if len(a) > 4 else 1.0
+    elif op == "transpose":
+        need(a, 4, "clip-edit <track> <clip> transpose <semitones>")
+        kw["semitones"] = int(a[3])
+    elif op == "velocity":
+        need(a, 4, "clip-edit <track> <clip> velocity <percent>")
+        kw["percent"] = float(a[3].rstrip("%"))
+    out(call("clip_edit", track=ref, **dict(kw, **cr)), "%s done" % op)
+
+
+@command("warp-markers", "warp-markers <track> <slot|@arr>", "warp markers of an audio clip (beat and sample time)", "clips")
+def c_warp_markers(a):
+    need(a, 2, "warp-markers <track> <slot|@arr>")
+    r = call("warp_markers", track=track(a[0])["ref"], **clip_ref(a[1]))
+    out(r, "\n".join("  beat %8.3f  sample time %9.4f s" % (m["beat"], m["sample_time"]) for m in r))
+
+
+def _target(t, dev_q, param_q):
+    """A parameter target: <device> <param>, or 'mixer' volume|pan|send <A>|activator, or 'chain' <D.C> volume|pan."""
+    if dev_q == "mixer":
+        q = param_q.split()
+        if q[0] == "send":
+            return {"mixer": "send", "index": ord(q[1].lower()) - 97 if q[1].isalpha() else int(q[1])}
+        return {"mixer": q[0]}
+    if dev_q.startswith("chain:"):
+        return {"chain": dev_q[6:], "chain_mixer": param_q}
+    d = find_device(t, dev_q)
+    ps = call("params", track=t["ref"], device=d["path"])["params"]
+    return {"device": d["path"], "param": find_param(ps, param_q)["i"]}
+
+
+@command("envelope", "envelope <track> <slot|@arr> <device|mixer> <param> [points]", "read a clip's automation envelope "
+         "for a parameter ('mixer volume', 'mixer \"send A\"')", "clips")
+def c_envelope(a):
+    need(a, 4, "envelope <track> <clip> <device|mixer> <param> [points]")
+    t = track(a[0])
+    kw = dict(_target(t, a[2], a[3]), **clip_ref(a[1]))
+    r = call("envelope", track=t["ref"], points=int(a[4]) if len(a) > 4 else 17, **kw)
+    if JSON or not r["exists"]:
+        return out(r, "no envelope for %s in this clip" % r["param"])
+    print("%s envelope:" % r["param"])
+    for p_ in r["points"]:
+        print("  beat %7.2f  %s" % (p_["time"], p_["text"]))
+
+
+@command("envelope-set", "envelope-set <track> <slot|@arr> <device|mixer> <param> <start:length=value>... [--clear]",
+         "write automation steps in a clip, e.g. 0:4=500Hz 4:4=2kHz 8:8=-6dB (beats)", "clips")
+def c_envelope_set(a):
+    need(a, 5, "envelope-set <track> <clip> <device|mixer> <param> <start:length=value>...")
+    t = track(a[0])
+    steps = []
+    for it in a[4:]:
+        if it == "--clear":
+            continue
+        tl, v = it.split("=", 1)
+        st, ln = tl.split(":")
+        step = {"time": float(st), "duration": float(ln)}
+        if v.startswith("#"):
+            step["value"] = float(v[1:])
+        else:
+            step["text"] = v
+        steps.append(step)
+    kw = dict(_target(t, a[2], a[3]), **clip_ref(a[1]))
+    out(call("envelope_set", track=t["ref"], steps=steps, clear="--clear" in a, **kw))
+
+
+@command("envelope-clear", "envelope-clear <track> <slot|@arr> [<device|mixer> <param>|--all]", "remove automation from a clip", "clips")
+def c_envelope_clear(a):
+    need(a, 3, "envelope-clear <track> <clip> <device|mixer> <param> | --all")
+    t = track(a[0])
+    if a[2] == "--all":
+        return out(call("envelope_clear", track=t["ref"], all=True, **clip_ref(a[1])))
+    need(a, 4, "envelope-clear <track> <clip> <device|mixer> <param>")
+    out(call("envelope_clear", track=t["ref"], **dict(_target(t, a[2], a[3]), **clip_ref(a[1]))))
+
+
+@command("automation", "automation", "parameters with automation playing or overridden (switched off by a manual change)", "info")
+def c_automation(a):
+    r = call("automation", timeout=20)
+    out(r, "\n".join("  %-4s %-22s %-40s %-10s %s" % (x["track"], x["track_name"][:22], x["param"][:40], x["state"], x["text"])
+                     for x in r) or "no automated parameters")
+
+
+@command("re-enable-automation", "re-enable-automation", "Live's Re-Enable Automation (all overridden parameters)", "transport")
+def c_re_enable(a):
+    out(call("re_enable_automation"), "automation re-enabled")
+
+
+@command("arr-add", "arr-add <track> <bar> slot <N> | file <path> | midi <bars>", "put a clip in the arrangement: copy of "
+         "a session clip, an audio file, or an empty MIDI clip", "clips")
+def c_arr_add(a):
+    need(a, 3, "arr-add <track> <bar> slot <N> | file <path> | midi <bars>")
+    t = track(a[0])
+    s_ = call("song")
+    at = bar_to_beats(a[1], s_)
+    kw = {"track": t["ref"], "time": at}
+    if a[2] == "slot":
+        kw["slot"] = int(a[3])
+    elif a[2] == "file":
+        kw["file"] = os.path.abspath(" ".join(a[3:]))
+    elif a[2] == "midi":
+        n, d = [int(x) for x in s_["signature"].split("/")]
+        kw["length"] = float(a[3] if len(a) > 3 else 1) * n * 4.0 / d
+    else:
+        raise LiveError("arr-add <track> <bar> slot <N> | file <path> | midi <bars>")
+    r = call("arr_add", **kw)
+    out(r, "\n".join("  @%d  bar %7.2f - %7.2f  %s" % (c["arr"], c["start_bar"], c["end_bar"], c["name"]) for c in r))
+
+
+# ================================================================== racks and native devices
+@command("rack", "rack <track> <device>", "chains of a rack (mixer, devices), macros, variations, Drum Rack pads", "devices")
+def c_rack(a):
+    need(a, 2, "rack <track> <device>")
+    t = track(a[0])
+    d = find_device(t, a[1])
+    r = call("rack", track=t["ref"], device=d["path"])
+    if JSON:
+        return out(r)
+    print("%s / %s (%s): %d variations%s" % (t["name"], r["device"], r["class"], r["variations"],
+          ", selected %d" % r["selected_variation"] if r["selected_variation"] >= 0 else ""))
+    for c in r["chains"]:
+        print("  chain %s.%d %-20s %s %s vol %s pan %s: %s" % (d["path"], c["i"], c["name"][:20], "MUTE" if c["mute"] else "    ",
+              "SOLO" if c["solo"] else "    ", c["volume"], c["pan"], ", ".join(c["devices"])))
+    print("  macros: " + ", ".join("%s=%s" % (m["name"], m["text"]) for m in r["macros"]))
+    for p_ in r.get("pads", []):
+        print("  pad %3d %-16s %s%s" % (p_["note"], p_["name"], "MUTE " if p_["mute"] else "", "SOLO" if p_["solo"] else ""))
+
+
+@command("chain", "chain <track> <D.C> [name=..] [mute=on|off] [solo=on|off] [volume=-6dB] [pan=20L]", "rack chain settings "
+         "(D.C = rack device path + chain index, e.g. 2.0)", "devices")
+def c_chain(a):
+    need(a, 2, "chain <track> <D.C> key=value...")
+    t = track(a[0])
+    kw = _kv(a[2:])
+    res = {}
+    for k in ("volume", "pan"):
+        if k in kw:
+            v = kw.pop(k)
+            if k == "volume" and parse_number(v) is not None and not v.lower().endswith("db"):
+                v += " dB"
+            res[k] = call("param_target", track=t["ref"], chain=a[1], chain_mixer=k, text=v)["change"]["after"]
+    for k in ("mute", "solo"):
+        if k in kw:
+            kw[k] = _bool(kw[k])
+    if kw:
+        res.update(call("chain_set", track=t["ref"], chain=a[1], **kw))
+    out(res)
+
+
+@command("chain-new", "chain-new <track> <rack device> [name]", "add a chain to a rack", "devices")
+def c_chain_new(a):
+    need(a, 2, "chain-new <track> <rack device> [name]")
+    t = track(a[0])
+    out(call("chain_insert", track=t["ref"], device=find_device(t, a[1])["path"], name=" ".join(a[2:]) or None))
+
+
+@command("variation", "variation <track> <rack> store|recall <i>|delete <i>|randomize", "rack macro variations", "devices")
+def c_variation(a):
+    need(a, 3, "variation <track> <rack> store|recall <i>|delete <i>|randomize")
+    t = track(a[0])
+    kw = {"op": a[2]}
+    if a[2] in ("recall", "delete"):
+        need(a, 4, "variation <track> <rack> %s <i>" % a[2])
+        kw["index"] = int(a[3])
+    out(call("variation", track=t["ref"], device=find_device(t, a[1])["path"], **kw))
+
+
+@command("pad", "pad <track> <drum rack> <note> mute|solo on|off", "mute or solo a Drum Rack pad", "devices")
+def c_pad(a):
+    need(a, 5, "pad <track> <drum rack> <note> mute|solo on|off")
+    t = track(a[0])
+    out(call("pad_set", track=t["ref"], device=find_device(t, a[1])["path"], note=int(a[2]), **{a[3]: _bool(a[4])}))
+
+
+@command("insert", "insert <track> <Live device name> [index] [chain D.C]", "insert a Live device directly (no browser): "
+         "'EQ Eight', 'Compressor', 'Utility'...", "devices")
+def c_insert(a):
+    need(a, 2, "insert <track> <device name> [index] [chain D.C]")
+    t = track(a[0])
+    rest = a[1:]
+    chain = None
+    if "chain" in rest:
+        k = rest.index("chain")
+        chain = rest[k + 1]
+        rest = rest[:k] + rest[k + 2:]
+    idx = None
+    if len(rest) > 1 and rest[-1].isdigit():
+        idx = int(rest[-1])
+        rest = rest[:-1]
+    kw = {"track": t["ref"], "name": " ".join(rest), "chain": chain}
+    if idx is not None:
+        kw["index"] = idx
+    r = call("insert_device", **kw)
+    out(r, "%s: %s" % (t["name"], ", ".join(r["devices"])))
+
+
+@command("duplicate", "duplicate <track> <device>", "duplicate a device (placed right after it)", "devices")
+def c_duplicate(a):
+    need(a, 2, "duplicate <track> <device>")
+    t = track(a[0])
+    r = call("duplicate_device", track=t["ref"], device=find_device(t, a[1])["path"])
+    out(r, "%s: %s" % (t["name"], ", ".join(r["devices"])))
+
+
+# ================================================================== mixer extras and view
+@command("pan-mode", "pan-mode <track> stereo|split [left right]", "Live's split stereo panning, e.g. pan-mode t3 split 50L 50R", "tracks")
+def c_pan_mode(a):
+    need(a, 2, "pan-mode <track> stereo|split [left right]")
+    t = track(a[0])
+    r = call("mixer_set", track=t["ref"], panning_mode=a[1])
+    if a[1] == "split" and len(a) >= 4:
+        call("param_target", track=t["ref"], mixer="split_left", text=a[2])
+        call("param_target", track=t["ref"], mixer="split_right", text=a[3])
+    out(r)
+
+
+@command("crossfade", "crossfade <track> A|none|B", "crossfader assignment", "tracks")
+def c_crossfade(a):
+    need(a, 2, "crossfade <track> A|none|B")
+    out(call("mixer_set", track=track(a[0])["ref"], crossfade=a[1]))
+
+
+@command("activator", "activator <track> on|off", "track activator (the track on/off button: no processing when off)", "tracks")
+def c_activator(a):
+    need(a, 2, "activator <track> on|off")
+    r = call("param_target", track=track(a[0])["ref"], mixer="activator", value=1.0 if _bool(a[1]) else 0.0)
+    out(r, "%s: activator %s" % (a[0], r["change"]["after"]))
+
+
+@command("cue", "cue [dB]", "preview/cue volume (master)", "tracks")
+def c_cue(a):
+    kw = {"text": a[0] + ("" if a[0].lower().endswith("db") else " dB")} if a else {}
+    r = call("param_target", track="m", mixer="cue", **kw)
+    out(r, "cue volume %s" % (r["change"]["after"] if a else r["text"]))
+
+
+@command("show", "show <track> [device|@clip|slot]", "bring a track, a device or a clip into view (to show the user)", "other")
+def c_show(a):
+    need(a, 1, "show <track> [device|slot]")
+    t = track(a[0])
+    kw = {"track": t["ref"]}
+    if len(a) > 1:
+        if a[1].isdigit() and int(a[1]) < 1000 and not any(d["path"] == a[1] for d in t["devices"]):
+            kw["slot"] = int(a[1])
+        else:
+            kw["device"] = find_device(t, a[1])["path"]
+    out(call("show", **kw), "shown")
+
+
+@command("view", "view Session|Arranger|Detail/Clip|Detail/DeviceChain|Browser", "show and focus one of Live's views", "other")
+def c_view(a):
+    need(a, 1, "view <name>")
+    out(call("show", view=a[0]), "ok")
+
+
+# ================================================================== snapshot, diff, restore, events
+SNAP_DIR = os.path.join(CONFIG_DIR, "snapshots")
+
+
+def _snap_path(name):
+    return os.path.join(SNAP_DIR, name if name.endswith(".json") else name + ".json")
+
+
+def _take():
+    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "values": call("snapshot", timeout=30)}
+
+
+def _diff(old, new):
+    o = {k: (lab, v, txt) for k, lab, v, txt in old["values"]}
+    n = {k: (lab, v, txt) for k, lab, v, txt in new["values"]}
+    changed = [(k, o[k][0], o[k][2], n[k][2], o[k][1], n[k][1]) for k in n if k in o and o[k][1] != n[k][1]]
+    added = [(k, n[k][0], n[k][2]) for k in n if k not in o]
+    removed = [(k, o[k][0], o[k][2]) for k in o if k not in n]
+    return changed, added, removed
+
+
+@command("snapshot", "snapshot [name]", "save every mixer, device and chain value of the set (default name: time)", "other")
+def c_snapshot(a):
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    name = a[0] if a else time.strftime("%Y%m%d-%H%M%S")
+    snap = _take()
+    with open(_snap_path(name), "w") as fh:
+        json.dump(snap, fh)
+    out({"name": name, "values": len(snap["values"])}, "snapshot '%s': %d values" % (name, len(snap["values"])))
+
+
+@command("snapshots", "snapshots", "saved snapshots", "other")
+def c_snapshots(a):
+    files = sorted(glob.glob(os.path.join(SNAP_DIR, "*.json")), key=os.path.getmtime)
+    rows = [{"name": os.path.basename(f)[:-5], "time": json.load(open(f)).get("time")} for f in files]
+    out(rows, "\n".join("  %-24s %s" % (r["name"], r["time"]) for r in rows) or "no snapshots")
+
+
+@command("diff", "diff [old-snapshot] [new-snapshot]", "what changed: between two snapshots, or from one (default: the "
+         "latest) to now", "other")
+def c_diff(a):
+    files = sorted(glob.glob(os.path.join(SNAP_DIR, "*.json")), key=os.path.getmtime)
+    if not a and not files:
+        raise LiveError("no snapshots yet: 'live snapshot' first")
+    old = json.load(open(_snap_path(a[0]) if a else files[-1]))
+    new = json.load(open(_snap_path(a[1]))) if len(a) > 1 else _take()
+    changed, added, removed = _diff(old, new)
+    if JSON:
+        return out({"changed": changed, "added": added, "removed": removed})
+    print("since %s: %d changed, %d new, %d gone" % (old["time"], len(changed), len(added), len(removed)))
+    for k, lab, ot, nt, _, _ in changed:
+        print("  %-60s %s -> %s" % (lab[:60], ot, nt))
+    for k, lab, txt in added[:40]:
+        print("  + %-58s %s" % (lab[:58], txt))
+    for k, lab, txt in removed[:40]:
+        print("  - %-58s %s" % (lab[:58], txt))
+
+
+@command("restore", "restore <snapshot> [filter]", "put back the values of a snapshot that differ now (only those whose "
+         "label contains filter); one undo step", "other")
+def c_restore(a):
+    need(a, 1, "restore <snapshot> [filter]")
+    old = json.load(open(_snap_path(a[0])))
+    f = " ".join(a[1:]).lower()
+    changed, _, _ = _diff(old, _take())
+    items = [[k, ov] for k, lab, _, _, ov, _ in changed if not f or f in lab.lower()]
+    if not items:
+        return out({"set": 0, "skipped": []}, "nothing to restore")
+    call("undo_begin")
+    try:
+        r = call("set_values", items=items, timeout=30)
+    finally:
+        call("undo_end")
+    if JSON:
+        return out(r)
+    print("restored %d values" % r["set"])
+    for k, why in r["skipped"]:
+        print("  skipped %s: %s" % (k, why))
+
+
+@command("events", "events [seconds] [filter]", "print what changes in the set while it happens (polls a snapshot every 0.5 s)", "info")
+def c_events(a):
+    sec = float(a[0]) if a else 30
+    f = " ".join(a[1:]).lower()
+    prev = _take()
+    prev_song = call("song")
+    t_end = time.time() + sec
+    while time.time() < t_end:
+        time.sleep(0.5)
+        cur = _take()
+        song = call("song")
+        stamp = time.strftime("%H:%M:%S")
+        for k in ("playing", "tempo", "record", "loop", "metronome", "tracks", "scenes"):
+            if song.get(k) != prev_song.get(k):
+                print("%s song %s: %s -> %s" % (stamp, k, prev_song.get(k), song.get(k)))
+        changed, added, removed = _diff(prev, cur)
+        for k, lab, ot, nt, _, _ in changed:
+            if k != "song|tempo" and (not f or f in lab.lower()):
+                print("%s %s: %s -> %s" % (stamp, lab, ot, nt))
+        for k, lab, txt in added:
+            if not f or f in lab.lower():
+                print("%s + %s" % (stamp, lab))
+        for k, lab, txt in removed:
+            if not f or f in lab.lower():
+                print("%s - %s" % (stamp, lab))
+        sys.stdout.flush()
+        prev, prev_song = cur, song
+
+
+# ================================================================== offline: read a .als without opening it
+@command("als", "als <file.als>", "read a Live set without opening it: tempo, tracks, devices and plugins, clips", "other")
+def c_als(a):
+    need(a, 1, "als <file.als>")
+    import gzip
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(gzip.open(a[0]).read())
+    ls = root.find("LiveSet")
+    main = ls.find("MainTrack")
+    if main is None:
+        main = ls.find("MasterTrack")       # Live 11 and older
+    tempo = main.find(".//Tempo/Manual") if main is not None else None
+    res = {"file": os.path.abspath(a[0]), "creator": root.get("Creator"),
+           "tempo": float(tempo.get("Value")) if tempo is not None else None, "tracks": []}
+
+    def first(el, *paths):
+        for pth in paths:
+            x = el.find(pth)
+            if x is not None and x.get("Value"):
+                return x.get("Value")
+        return None
+
+    friendly = {"Eq8": "EQ Eight", "GlueCompressor": "Glue Compressor", "ProxyAudioEffectDevice": "External Audio Effect",
+                "ProxyInstrumentDevice": "External Instrument", "AudioEffectGroupDevice": "Audio Effect Rack",
+                "InstrumentGroupDevice": "Instrument Rack", "DrumGroupDevice": "Drum Rack", "MidiEffectGroupDevice": "MIDI Effect Rack",
+                "Compressor2": "Compressor", "StereoGain": "Utility", "AutoFilter": "Auto Filter", "Reverb": "Reverb",
+                "Delay": "Delay", "Limiter": "Limiter", "Saturator": "Saturator", "MultibandDynamics": "Multiband Dynamics",
+                "OriginalSimpler": "Simpler", "MultiSampler": "Sampler", "InstrumentVector": "Wavetable", "Drift": "Drift"}
+
+    def devname(d):
+        un = first(d, "UserName")
+        if d.tag in ("PluginDevice", "AuPluginDevice"):
+            return un or first(d, ".//PluginDesc//PlugName", ".//PluginDesc//Name") or d.tag
+        preset = first(d, "LastPresetRef//RelativePath", "LastPresetRef//Path")
+        base = friendly.get(d.tag, d.tag)
+        if un:
+            return un
+        if preset:
+            pn = os.path.splitext(os.path.basename(preset))[0]
+            return base if pn == base else "%s (%s)" % (pn, base)
+        return base
+
+    for kind in ("AudioTrack", "MidiTrack", "GroupTrack", "ReturnTrack"):
+        for t in ls.find("Tracks").findall(kind) if kind != "ReturnTrack" else ls.find("Tracks").findall("ReturnTrack"):
+            name = t.find("Name/EffectiveName").get("Value")
+            chain = t.find("DeviceChain/DeviceChain/Devices")
+            devs = [devname(d) for d in list(chain)] if chain is not None else []
+            n_sess = len(t.findall(".//ClipSlot//AudioClip")) + len(t.findall(".//ClipSlot//MidiClip"))
+            n_arr = len(t.findall(".//ArrangerAutomation/Events/AudioClip")) + len(t.findall(".//ArrangerAutomation/Events/MidiClip"))
+            res["tracks"].append({"kind": kind.replace("Track", "").lower(), "name": name, "devices": devs,
+                                  "session_clips": n_sess, "arrangement_clips": n_arr})
+    m = main.find("DeviceChain/DeviceChain/Devices") if main is not None else None
+    res["master_devices"] = [devname(d) for d in list(m)] if m is not None else []
+    if JSON:
+        return out(res)
+    print("%s (%s), tempo %s" % (res["file"], res["creator"], res["tempo"]))
+    for t in res["tracks"]:
+        print("  %-6s %-28s clips %3d/%-3d %s" % (t["kind"], t["name"][:28], t["session_clips"], t["arrangement_clips"],
+              ", ".join(t["devices"])))
+    print("  master: " + ", ".join(res["master_devices"]))
+
+
+# ================================================================== plugin inventory
+CATALOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "catalog.json")
+INVENTORY = os.path.join(CONFIG_DIR, "plugin-inventory.json")
+_VARIANT = re.compile(r"\s*\((m|s|mono|stereo|[^()]*->[^()]*|[0-9.]+/[0-9.]+)\)$|\s+(Mono/Stereo|Mono|Stereo)$", re.I)
+
+
+def _base_name(n):
+    prev = None
+    while prev != n:
+        prev, n = n, _VARIANT.sub("", n).strip()
+    return n
+
+
+def _classify(rules, vendor, name):
+    key = "%s / %s" % (vendor, name)
+    for r in rules:
+        if re.search(r["match"], key, re.I):
+            return {k: r[k] for k in ("category", "styles", "emulates", "notes") if k in r}
+    return {"category": "uncategorized"}
+
+
+def _inventory_from_live():
+    items = call("plugin_list", natives=True, timeout=90)
+    out_ = {}
+    for x in items:
+        parts = x["path"].split("/")
+        if x.get("native"):
+            vendor, fmt = "Live", "native"
+        else:
+            fmt = parts[1]
+            vendor = parts[2] if len(parts) > 3 else "?"
+        if vendor == "Elektron Music Machines":
+            vendor = "Elektron"
+        name = _base_name(x["name"])
+        e = out_.setdefault((vendor, name), {"vendor": vendor, "name": name, "formats": [], "paths": {}})
+        if fmt not in e["formats"]:
+            e["formats"].append(fmt)
+            e["paths"][fmt] = x["path"]
+        if x.get("native"):
+            e["kind"] = x["native"]
+    return list(out_.values()), "live"
+
+
+def _inventory_from_files():
+    import plistlib
+    out_ = {}
+    roots = ["/Library/Audio/Plug-Ins", os.path.expanduser("~/Library/Audio/Plug-Ins")]
+    for r in roots:
+        for b in glob.glob(os.path.join(r, "Components", "*.component")):
+            try:
+                info = plistlib.load(open(os.path.join(b, "Contents", "Info.plist"), "rb"))
+            except Exception:
+                continue
+            for comp in info.get("AudioComponents", []):
+                full = comp.get("name", "")
+                vendor, _, name = full.partition(":") if ":" in full else ("?", "", full)
+                name = _base_name(name.strip())
+                e = out_.setdefault((vendor.strip(), name), {"vendor": vendor.strip(), "name": name, "formats": [], "paths": {}})
+                if "AUv2" not in e["formats"]:
+                    e["formats"].append("AUv2")
+                    e["paths"]["AUv2"] = b
+        for b in glob.glob(os.path.join(r, "VST3", "*.vst3")):
+            vendor, names = "?", [os.path.basename(b)[:-5]]
+            mi = os.path.join(b, "Contents", "Resources", "moduleinfo.json")
+            try:
+                m = json.load(open(mi))
+                vendor = m.get("Factory Info", {}).get("Vendor", vendor)
+                names = [c["Name"] for c in m.get("Classes", []) if c.get("Category") == "Audio Module Class"] or names
+            except Exception:
+                pass
+            for n in names:
+                e = out_.setdefault((vendor, _base_name(n)), {"vendor": vendor, "name": _base_name(n), "formats": [], "paths": {}})
+                if "VST3" not in e["formats"]:
+                    e["formats"].append("VST3")
+                    e["paths"]["VST3"] = b
+    return list(out_.values()), "files"
+
+
+def plugin_inventory(refresh=False):
+    if not refresh and os.path.exists(INVENTORY) and time.time() - os.path.getmtime(INVENTORY) < 7 * 86400:
+        return json.load(open(INVENTORY))
+    try:
+        items, source = _inventory_from_live()
+    except LiveError:
+        items, source = _inventory_from_files()
+    rules = json.load(open(CATALOG))["rules"]
+    for e in items:
+        e.update(_classify(rules, e["vendor"], e["name"]))
+    inv = {"time": time.strftime("%Y-%m-%d %H:%M"), "source": source, "plugins": items}
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(INVENTORY, "w") as fh:
+        json.dump(inv, fh, ensure_ascii=False)
+    return inv
+
+
+@command("plugins", "plugins [query] [--refresh] [--native|--no-native]", "installed plugins and Live devices by "
+         "category, with style and emulated hardware (catalog.json). query matches name, vendor, category, style: "
+         "'compressor', 'opto', 'la-2a', 'plate', 'tape'...", "browser")
+def c_plugins(a):
+    flags = {x for x in a if x.startswith("--")}
+    q = " ".join(x for x in a if not x.startswith("--")).lower()
+    inv = plugin_inventory(refresh="--refresh" in flags)
+    ps = inv["plugins"]
+    if "--native" in flags:
+        ps = [p_ for p_ in ps if p_["vendor"] == "Live"]
+    if "--no-native" in flags:
+        ps = [p_ for p_ in ps if p_["vendor"] != "Live"]
+    if q:
+        def hay(p_):
+            return " ".join([p_["vendor"], p_["name"], p_.get("category", ""), " ".join(p_.get("styles", [])),
+                             p_.get("emulates", ""), p_.get("notes", "")]).lower()
+        words = q.replace("-", " ").split()
+        ps = [p_ for p_ in ps if all(w in hay(p_).replace("-", " ") for w in words)]
+    if JSON:
+        return out({"time": inv["time"], "source": inv["source"], "plugins": ps})
+    by = {}
+    for p_ in ps:
+        by.setdefault(p_.get("category", "uncategorized"), []).append(p_)
+    print("%d plugins and devices (inventory %s, from %s)" % (len(ps), inv["time"], inv["source"]))
+    for cat in sorted(by, key=lambda c: (c == "uncategorized", c)):
+        print("\n%s (%d)" % (cat, len(by[cat])))
+        for p_ in sorted(by[cat], key=lambda p_: (p_["vendor"] != "Live", p_["vendor"].lower(), p_["name"].lower())):
+            extra = []
+            if p_.get("emulates"):
+                extra.append(p_["emulates"])
+            if p_.get("styles") and q:
+                extra.append(", ".join(p_["styles"]))
+            print("  %-48s %-14s %s" % (("%s / %s" % (p_["vendor"], p_["name"]))[:48], "+".join(p_["formats"])[:14],
+                  " | ".join(extra)[:90]))
+            if q and p_.get("notes"):
+                print("  %-48s note: %s" % ("", p_["notes"]))
 
 
 # ================================================================== maintenance

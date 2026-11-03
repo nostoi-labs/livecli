@@ -15,7 +15,7 @@ import re
 
 import Live
 
-VERSION = 11
+VERSION = 12
 DEFERRED = object()
 
 
@@ -148,16 +148,21 @@ def _num(txt):
     return v
 
 
-def _set_by_text(p, text):
-    """Set a parameter from its display text ('-3 dB', '250 Hz', 'Bell'). Works for Live's own devices
-    (str_for_value). Plugins don't translate values in advance: the CLI sets them by read-back."""
+def _value_for_text(p, text):
+    """Raw value whose display text shows `text` ('-3 dB', '250 Hz', '20L', 'Bell'), without touching the parameter.
+    Works for Live's own devices (str_for_value). Plugins don't translate values in advance: the CLI uses read-back."""
     if p.is_quantized:
         choices = [p.str_for_value(v) for v in range(int(p.min), int(p.max) + 1)]
         for k, c in enumerate(choices):
             if str(text).strip().lower() == c.strip().lower():
-                p.value = int(p.min) + k
-                return
+                return int(p.min) + k
         raise ValueError("'%s' is not one of: %s" % (text, ", ".join(choices)))
+    pan = re.match(r"^\s*(?:(\d+(?:[.,]\d+)?)\s*([LR])|C|CENTER|CENTRE)\s*$", str(text).strip().upper())
+    if pan and p.min < 0 < p.max and str(p.str_for_value(p.min)).strip().upper().endswith("L"):
+        if pan.group(1) is None:
+            return 0.0
+        n = float(pan.group(1).replace(",", ".")) / 50.0
+        return max(p.min, min(p.max, -n * abs(p.min) if pan.group(2) == "L" else n * p.max))
     goal = _num(text)
     if goal is None:
         raise ValueError("not a number: %s" % text)
@@ -177,7 +182,11 @@ def _set_by_text(p, text):
             hi = mid
     # the display is rounded: of the values around the boundary, keep the one that shows the closest number
     cands = [lo, (lo + hi) / 2.0, hi]
-    p.value = min(cands, key=lambda x: (abs((_num(p.str_for_value(x)) or 0) - goal), abs(x - (lo + hi) / 2.0)))
+    return min(cands, key=lambda x: (abs((_num(p.str_for_value(x)) or 0) - goal), abs(x - (lo + hi) / 2.0)))
+
+
+def _set_by_text(p, text):
+    p.value = _value_for_text(p, text)
 
 
 def _set_param(p, req):
@@ -194,18 +203,50 @@ def _param_info(i, p):
             "quantized": p.is_quantized, "enabled": p.is_enabled}
 
 
+LAUNCH_MODES = ["trigger", "gate", "toggle", "repeat"]
+LAUNCH_Q = ["global", "none", "8 bars", "4 bars", "2 bars", "1 bar", "1/2", "1/2T", "1/4", "1/4T", "1/8", "1/8T",
+            "1/16", "1/16T", "1/32"]
+WARP_MODES = ["beats", "tones", "texture", "re-pitch", "complex", "rex", "complex pro"]
+QUANT_GRID = {"1/4": 1, "1/8": 2, "1/8T": 3, "1/8+T": 4, "1/16": 5, "1/16T": 6, "1/16+T": 7, "1/32": 8}
+
+
+def _safe(obj, attr, default=None):
+    try:
+        return getattr(obj, attr)
+    except Exception:
+        return default
+
+
 def _clip_info(c):
     e = {"name": c.name, "color": _color(c), "length": c.length, "looping": c.looping,
-         "loop_start": c.loop_start, "loop_end": c.loop_end, "midi": c.is_midi_clip,
-         "playing": c.is_playing, "triggered": c.is_triggered, "muted": c.muted}
+         "loop_start": c.loop_start, "loop_end": c.loop_end, "start_marker": _safe(c, "start_marker"),
+         "end_marker": _safe(c, "end_marker"), "midi": c.is_midi_clip,
+         "playing": c.is_playing, "triggered": c.is_triggered, "muted": c.muted,
+         "launch_mode": LAUNCH_MODES[c.launch_mode] if _safe(c, "launch_mode") is not None else None,
+         "launch_quantization": LAUNCH_Q[c.launch_quantization] if _safe(c, "launch_quantization") is not None else None,
+         "legato": _safe(c, "legato"), "velocity_amount": _safe(c, "velocity_amount"),
+         "has_envelopes": _safe(c, "has_envelopes")}
+    if _safe(c, "is_arrangement_clip"):
+        e.update({"start": c.start_time, "end": c.end_time})
     if c.is_audio_clip:
-        e.update({"file": getattr(c, "file_path", None), "warping": c.warping,
-                  "gain": getattr(c, "gain_display_string", None)})
+        wm = _safe(c, "warp_mode")
+        e.update({"file": _safe(c, "file_path"), "warping": _safe(c, "warping"),
+                  "warp_mode": WARP_MODES[wm] if wm is not None and wm < len(WARP_MODES) else wm,
+                  "gain": _safe(c, "gain_display_string"), "pitch_coarse": _safe(c, "pitch_coarse"),
+                  "pitch_fine": _safe(c, "pitch_fine"), "ram_mode": _safe(c, "ram_mode"),
+                  "sample_rate": _safe(c, "sample_rate"), "sample_length": _safe(c, "sample_length")})
     return e
 
 
 def _clip(cs, req):
+    """Session clip (track + slot) or arrangement clip (track + arr = index in arrangement order)."""
     t = _track(cs, req["track"])
+    if req.get("arr") is not None:
+        clips = sorted(t.arrangement_clips, key=lambda c: c.start_time)
+        i = int(req["arr"])
+        if i >= len(clips):
+            raise ValueError("%s has %d arrangement clips" % (t.name, len(clips)))
+        return t, None, clips[i]
     slot = t.clip_slots[int(req["slot"])]
     if not slot.has_clip:
         raise ValueError("no clip in %s slot %s" % (t.name, req["slot"]))
@@ -373,8 +414,8 @@ def c_arrangement(cs, req):
     out = []
     for ref in refs:
         t = _track(cs, ref)
-        for c in getattr(t, "arrangement_clips", []):
-            out.append({"track": ref, "track_name": t.name, "name": c.name, "start": c.start_time,
+        for k, c in enumerate(sorted(getattr(t, "arrangement_clips", []), key=lambda c: c.start_time)):
+            out.append({"track": ref, "track_name": t.name, "arr": k, "name": c.name, "start": c.start_time,
                         "end": c.end_time, "start_bar": _bar(s, c.start_time), "end_bar": _bar(s, c.end_time),
                         "muted": c.muted, "midi": c.is_midi_clip,
                         "file": getattr(c, "file_path", None) if c.is_audio_clip else None})
@@ -385,7 +426,7 @@ def c_notes(cs, req):
     _, _, c = _clip(cs, req)
     if not c.is_midi_clip:
         raise ValueError("not a MIDI clip")
-    notes = c.get_notes_extended(0, 128, 0.0, 1e6)
+    notes = c.get_all_notes_extended() if hasattr(c, "get_all_notes_extended") else c.get_notes_extended(0, 128, 0.0, 1e6)
     return [{"pitch": n.pitch, "start": n.start_time, "duration": n.duration, "velocity": n.velocity,
              "mute": n.mute, "probability": n.probability} for n in notes]
 
@@ -489,6 +530,30 @@ def _item(br, path):
             raise ValueError("not found in browser: %s (inside %s)" % (name, it.name))
         it = nxt
     return it
+
+
+def _walk_plugins(item, path, out, depth):
+    if depth > 6:
+        return
+    for ch in item.children:
+        p = path + "/" + ch.name
+        if ch.is_loadable and not ch.is_folder:
+            out.append({"path": p, "name": ch.name, "device": bool(_safe(ch, "is_device", False))})
+        elif ch.is_folder or len(ch.children):
+            _walk_plugins(ch, p, out, depth + 1)
+
+
+def c_plugin_list(cs, req):
+    """Every plugin Live knows (browser 'plugins': format/vendor/name) and, with natives=true, Live's own devices."""
+    br = Live.Application.get_application().browser
+    out = []
+    _walk_plugins(br.plugins, "plugins", out, 0)
+    if req.get("natives"):
+        for root in ("audio_effects", "instruments", "midi_effects"):
+            for ch in getattr(br, root).children:
+                if _safe(ch, "is_device", False) or ch.is_loadable:
+                    out.append({"path": "%s/%s" % (root, ch.name), "name": ch.name, "device": True, "native": root})
+    return out
 
 
 def c_browse(cs, req):
@@ -876,9 +941,12 @@ def c_clip_create(cs, req):
 
 
 def c_clip_delete(cs, req):
-    _, slot, c = _clip(cs, req)
+    t, slot, c = _clip(cs, req)
     name = c.name
-    slot.delete_clip()
+    if slot is None:
+        t.delete_clip(c)
+    else:
+        slot.delete_clip()
     return {"deleted": name}
 
 
@@ -888,19 +956,99 @@ def c_clip_duplicate(cs, req):
     return {"slot": i}
 
 
+def _set_by_display(get_text, set_raw, lo, hi, goal):
+    """Binary search a raw value so that the display text shows `goal` (for values without str_for_value)."""
+    a, b = lo, hi
+    set_raw(a)
+    va = _num(get_text())
+    set_raw(b)
+    vb = _num(get_text())
+    up = (vb or 0) >= (va or 0)
+    for _ in range(40):
+        m = (a + b) / 2.0
+        set_raw(m)
+        v = _num(get_text())
+        if v is None:
+            break
+        if (v < goal) == up:
+            a = m
+        else:
+            b = m
+    cands = [a, (a + b) / 2.0, b]
+    best = None
+    for x in cands:
+        set_raw(x)
+        d = abs((_num(get_text()) or 0) - goal)
+        if best is None or d < best[0]:
+            best = (d, x)
+    set_raw(best[1])
+
+
 def c_clip_set(cs, req):
+    """Clip properties. launch_mode: trigger|gate|toggle|repeat; launch_quantization: global|none|1 bar|1/4...;
+    warp_mode: beats|tones|texture|re-pitch|complex|complex pro; gain: '-3 dB' or raw 0..1."""
     _, _, c = _clip(cs, req)
     if "name" in req:
         c.name = req["name"]
     if "color" in req:
         c.color = int(str(req["color"]).lstrip("#"), 16)
-    for k in ("looping", "muted"):
+    for k in ("looping", "muted", "legato", "warping", "ram_mode"):
         if k in req:
             setattr(c, k, bool(req[k]))
-    for k in ("loop_start", "loop_end"):
+    # markers: set in a safe order (loop_end before loop_start when moving right, etc.)
+    for k in ("loop_end", "loop_start", "end_marker", "start_marker") if float(req.get("loop_start", 0)) >= c.loop_end else \
+            ("loop_start", "loop_end", "start_marker", "end_marker"):
         if k in req:
             setattr(c, k, float(req[k]))
+    if "launch_mode" in req:
+        c.launch_mode = LAUNCH_MODES.index(req["launch_mode"])
+    if "launch_quantization" in req:
+        c.launch_quantization = LAUNCH_Q.index(req["launch_quantization"])
+    if "velocity_amount" in req:
+        c.velocity_amount = float(req["velocity_amount"])
+    if "warp_mode" in req:
+        c.warp_mode = WARP_MODES.index(req["warp_mode"])
+    if "pitch_coarse" in req:
+        c.pitch_coarse = int(req["pitch_coarse"])
+    if "pitch_fine" in req:
+        c.pitch_fine = float(req["pitch_fine"])
+    if "gain" in req:
+        g = str(req["gain"])
+        if g.startswith("="):
+            c.gain = float(g[1:])
+        else:
+            _set_by_display(lambda: c.gain_display_string, lambda v: setattr(c, "gain", v), 0.0, 1.0, _num(g))
     return _clip_info(c)
+
+
+def c_clip_edit(cs, req):
+    """MIDI/clip editing: quantize (grid, amount), transpose (semitones), crop, duplicate_loop, velocity (scale %)."""
+    _, _, c = _clip(cs, req)
+    op = req["op"]
+    if op == "quantize":
+        c.quantize(QUANT_GRID[req.get("grid", "1/16")], float(req.get("amount", 1.0)))
+    elif op == "crop":
+        c.crop()
+    elif op == "duplicate_loop":
+        c.duplicate_loop()
+    elif op in ("transpose", "velocity"):
+        notes = c.get_all_notes_extended() if hasattr(c, "get_all_notes_extended") else c.get_notes_extended(0, 128, 0.0, 1e6)
+        for n in notes:
+            if op == "transpose":
+                n.pitch = max(0, min(127, n.pitch + int(req["semitones"])))
+            else:
+                n.velocity = max(1.0, min(127.0, n.velocity * float(req["percent"]) / 100.0))
+        c.apply_note_modifications(notes)
+    else:
+        raise ValueError("op = quantize | transpose | velocity | crop | duplicate_loop")
+    return _clip_info(c)
+
+
+def c_warp_markers(cs, req):
+    _, _, c = _clip(cs, req)
+    if not c.is_audio_clip:
+        raise ValueError("not an audio clip")
+    return [{"beat": m.beat_time, "sample_time": m.sample_time} for m in c.warp_markers]
 
 
 def c_set_notes(cs, req):
@@ -919,6 +1067,327 @@ def c_set_notes(cs, req):
     if specs:
         c.add_new_notes(tuple(specs))
     return {"notes": len(c.get_notes_extended(0, 128, 0.0, 1e6))}
+
+
+# ------------------------------------------------------------------ parameters by target (mixer, chains, devices)
+def _target_param(cs, req):
+    """A parameter addressed by track + one of: device+param, mixer=volume|pan|send|activator|split_left|split_right|
+    crossfader|cue|tempo (+index for send), chain (rack path 'D.C') + chain_mixer=volume|pan|send."""
+    t = _track(cs, req["track"])
+    if req.get("mixer"):
+        md = t.mixer_device
+        m = req["mixer"]
+        table = {"volume": "volume", "pan": "panning", "activator": "track_activator", "split_left": "left_split_stereo",
+                 "split_right": "right_split_stereo", "crossfader": "crossfader", "cue": "cue_volume", "tempo": "song_tempo"}
+        if m == "send":
+            return md.sends[int(req.get("index", 0))]
+        return getattr(md, table[m])
+    if req.get("chain") is not None:
+        ch = _chain(cs, req["track"], req["chain"])
+        m = req.get("chain_mixer", "volume")
+        md = ch.mixer_device
+        if m == "send":
+            return md.sends[int(req.get("index", 0))]
+        return {"volume": md.volume, "pan": md.panning}[m]
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    return d.parameters[int(req["param"])]
+
+
+def _chain(cs, ref, path):
+    """'2.1' = chain 1 of the rack at device path 2 (paths can go deeper: '2.0.3.1')."""
+    parts = str(path).split(".")
+    _, _, rack = _resolve(cs, ref, ".".join(parts[:-1]))
+    return rack.chains[int(parts[-1])]
+
+
+def c_param_target(cs, req):
+    p = _target_param(cs, req)
+    info = _param_info(0, p)
+    info.update({"automation_state": ["none", "playing", "overridden"][_safe(p, "automation_state", 0) or 0],
+                 "default": _safe(p, "default_value"), "display_value": _safe(p, "display_value")})
+    if req.get("set") is not None or req.get("text") is not None or req.get("value") is not None:
+        info["change"] = _set_param(p, req)
+    return info
+
+
+def c_mixer_set(cs, req):
+    """Mixer extras: panning_mode stereo|split, crossfade A|none|B, plus any mixer parameter via set_target."""
+    t = _track(cs, req["track"])
+    md = t.mixer_device
+    if "panning_mode" in req:
+        md.panning_mode = ["stereo", "split"].index(req["panning_mode"])
+    if "crossfade" in req:
+        md.crossfade_assign = ["A", "none", "B"].index(req["crossfade"])
+    return {"track": t.name, "panning_mode": ["stereo", "split"][md.panning_mode],
+            "crossfade": ["A", "none", "B"][md.crossfade_assign] if _safe(md, "crossfade_assign") is not None else None,
+            "activator": str(md.track_activator) if _safe(md, "track_activator") is not None else None}
+
+
+# ------------------------------------------------------------------ automation (clip envelopes)
+def c_envelope(cs, req):
+    """Read a clip envelope for a parameter: N points over the clip, or 'exists': false."""
+    _, _, c = _clip(cs, req)
+    p = _target_param(cs, dict(req, track=req.get("param_track", req["track"])))
+    env = c.automation_envelope(p)
+    if env is None:
+        return {"exists": False, "param": p.name}
+    n = int(req.get("points", 33))
+    a, b = c.loop_start if c.looping else c.start_marker, c.loop_end if c.looping else c.end_marker
+    pts = []
+    for k in range(n):
+        tm = a + (b - a) * k / (n - 1)
+        # at the exact start of a step Live returns the previous value: read just after it
+        v = env.value_at_time(min(b, tm + 1e-4))
+        pts.append({"time": round(tm, 4), "value": v, "text": p.str_for_value(v)})
+    return {"exists": True, "param": p.name, "points": pts}
+
+
+def c_envelope_set(cs, req):
+    """Write steps into a clip envelope: steps = [{"time": beats, "duration": beats, "value": raw}] (or "text").
+    With clear=true the existing envelope for that parameter is removed first."""
+    _, _, c = _clip(cs, req)
+    p = _target_param(cs, dict(req, track=req.get("param_track", req["track"])))
+    if req.get("clear"):
+        c.clear_envelope(p)
+    env = c.automation_envelope(p) or c.create_automation_envelope(p)
+    for st in req.get("steps", []):
+        v = st.get("value")
+        if v is None:
+            v = _value_for_text(p, st["text"])
+        env.insert_step(float(st["time"]), float(st.get("duration", 0.0)), float(v))
+    return {"param": p.name, "steps": len(req.get("steps", []))}
+
+
+def c_envelope_clear(cs, req):
+    _, _, c = _clip(cs, req)
+    if req.get("all"):
+        c.clear_all_envelopes()
+        return {"cleared": "all"}
+    p = _target_param(cs, dict(req, track=req.get("param_track", req["track"])))
+    c.clear_envelope(p)
+    return {"cleared": p.name}
+
+
+def c_automation(cs, req):
+    """Parameters of the set that are automated (playing) or overridden (automation switched off by a manual change)."""
+    out = []
+    for ref, t in _tracks(cs):
+        md = t.mixer_device
+        cand = [("mixer volume", md.volume), ("mixer pan", md.panning)] + [("send %s" % chr(65 + i), x) for i, x in enumerate(md.sends)]
+        for d_path, d in _walk_devices(t):
+            cand += [("%s / %s" % (d.name, p.name), p) for p in d.parameters]
+        for label, p in cand:
+            st = _safe(p, "automation_state", 0) or 0
+            if st:
+                out.append({"track": ref, "track_name": t.name, "param": label,
+                            "state": ["none", "playing", "overridden"][st], "text": str(p)})
+    return out
+
+
+def c_re_enable_automation(cs, req):
+    _song(cs).re_enable_automation()
+    return True
+
+
+def _walk_devices(cont, prefix=""):
+    for j, d in enumerate(cont.devices):
+        path = "%s%d" % (prefix, j)
+        yield path, d
+        if d.can_have_chains:
+            for c, ch in enumerate(d.chains):
+                for x in _walk_devices(ch, "%s.%d." % (path, c)):
+                    yield x
+
+
+# ------------------------------------------------------------------ racks
+def c_rack(cs, req):
+    """Chains of a rack (with their mixer), macros, variations; for a Drum Rack, the pads that hold chains."""
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    if not d.can_have_chains:
+        raise ValueError("%s is not a rack" % d.name)
+    out = {"device": d.name, "class": d.class_name,
+           "chains": [{"i": i, "name": ch.name, "mute": ch.mute, "solo": ch.solo, "color": _color(ch),
+                       "volume": str(ch.mixer_device.volume) if _safe(ch, "mixer_device") else None,
+                       "pan": str(ch.mixer_device.panning) if _safe(ch, "mixer_device") else None,
+                       "devices": [x.name for x in ch.devices]} for i, ch in enumerate(d.chains)],
+           "macros": [{"i": i, "name": p.name, "text": str(p)} for i, p in enumerate(d.parameters)
+                      if p.name.startswith("Macro") or i in range(1, 1 + (_safe(d, "visible_macro_count", 0) or 0))],
+           "variations": _safe(d, "variation_count", 0), "selected_variation": _safe(d, "selected_variation_index", -1)}
+    if _safe(d, "can_have_drum_pads"):
+        out["pads"] = [{"note": pad.note, "name": pad.name, "mute": pad.mute, "solo": pad.solo,
+                        "chains": len(pad.chains)} for pad in d.drum_pads if len(pad.chains)]
+    return out
+
+
+def c_chain_set(cs, req):
+    ch = _chain(cs, req["track"], req["chain"])
+    if "name" in req:
+        ch.name = req["name"]
+    for k in ("mute", "solo"):
+        if k in req:
+            setattr(ch, k, bool(req[k]))
+    if "color" in req:
+        ch.color = int(str(req["color"]).lstrip("#"), 16)
+    return {"chain": ch.name, "mute": ch.mute, "solo": ch.solo}
+
+
+def c_chain_insert(cs, req):
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    idx = int(req.get("index", len(d.chains)))
+    d.insert_chain(idx)
+    if req.get("name"):
+        d.chains[idx].name = req["name"]
+    return {"chains": [c.name for c in d.chains]}
+
+
+def c_variation(cs, req):
+    """Rack macro variations: store | recall <i> | delete <i> | randomize."""
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    op = req["op"]
+    if op == "store":
+        d.store_variation()
+    elif op == "recall":
+        d.selected_variation_index = int(req["index"])
+        d.recall_selected_variation()
+    elif op == "delete":
+        d.selected_variation_index = int(req["index"])
+        d.delete_selected_variation()
+    elif op == "randomize":
+        d.randomize_macros()
+    else:
+        raise ValueError("op = store | recall | delete | randomize")
+    return {"variations": d.variation_count, "selected": d.selected_variation_index}
+
+
+def c_pad_set(cs, req):
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    pad = d.drum_pads[int(req["note"])]
+    for k in ("mute", "solo"):
+        if k in req:
+            setattr(pad, k, bool(req[k]))
+    return {"note": pad.note, "name": pad.name, "mute": pad.mute, "solo": pad.solo}
+
+
+# ------------------------------------------------------------------ native devices without the browser
+def c_insert_device(cs, req):
+    """Insert a Live device by name ('EQ Eight', 'Compressor', 'Utility'...) at an index, on a track or in a chain."""
+    cont = _chain(cs, req["track"], req["chain"]) if req.get("chain") is not None else _track(cs, req["track"])
+    idx = int(req.get("index", len(cont.devices)))
+    cont.insert_device(req["name"], idx)
+    return {"devices": [d.name for d in cont.devices]}
+
+
+def c_duplicate_device(cs, req):
+    cont, i, d = _resolve(cs, req["track"], req["device"])
+    cont.duplicate_device(i)
+    return {"devices": [x.name for x in cont.devices]}
+
+
+# ------------------------------------------------------------------ arrangement editing
+def c_arr_add(cs, req):
+    """Put a clip in the arrangement: from a session slot (copy), a new empty MIDI clip, or an audio file."""
+    t = _track(cs, req["track"])
+    at = float(req["time"])
+    if req.get("slot") is not None:
+        t.duplicate_clip_to_arrangement(t.clip_slots[int(req["slot"])].clip, at)
+    elif req.get("file"):
+        t.create_audio_clip(req["file"], at)
+    else:
+        t.create_midi_clip(at, float(req.get("length", 4.0)))
+    return c_arrangement(cs, {"track": req["track"]})
+
+
+# ------------------------------------------------------------------ view
+def c_show(cs, req):
+    """Bring something into view so the user sees what changed: a track, a device, a clip (session or arrangement)."""
+    s = _song(cs)
+    app_view = Live.Application.get_application().view
+    if req.get("track") is not None:
+        t = _track(cs, req["track"])
+        s.view.selected_track = t
+        if req.get("device") is not None:
+            _, _, d = _resolve(cs, req["track"], req["device"])
+            s.view.select_device(d)
+            app_view.show_view("Detail/DeviceChain")
+        elif req.get("slot") is not None:
+            s.view.highlighted_clip_slot = t.clip_slots[int(req["slot"])]
+            app_view.show_view("Detail/Clip")
+    if req.get("view"):
+        app_view.show_view(req["view"])
+        app_view.focus_view(req["view"])
+    return True
+
+
+# ------------------------------------------------------------------ snapshot of every value (for diff / restore)
+def _snap_param(out, key, label, p):
+    try:
+        out.append([key, label, p.value, str(p)])
+    except Exception:
+        pass
+
+
+def c_snapshot(cs, req):
+    """Every mixer, device and chain parameter of the set, plus track mute/solo/arm: [[key, label, raw, text]].
+    Keys are stable addresses usable with set_values."""
+    out = []
+    for ref, t in _tracks(cs):
+        md = t.mixer_device
+        for nm in ("volume", "panning", "track_activator"):
+            p = _safe(md, nm)
+            if p is not None:
+                _snap_param(out, "%s|mix|%s" % (ref, nm), "%s / mixer %s" % (t.name, nm), p)
+        for i, x in enumerate(md.sends):
+            _snap_param(out, "%s|mix|send|%d" % (ref, i), "%s / send %s" % (t.name, chr(65 + i)), x)
+        for k in ("mute", "solo", "arm"):
+            v = _safe(t, k)
+            if v is not None and (k != "arm" or _safe(t, "can_be_armed")):
+                out.append(["%s|track|%s" % (ref, k), "%s / %s" % (t.name, k), bool(v), "on" if v else "off"])
+        for path, d in _walk_devices(t):
+            for i, p in enumerate(d.parameters):
+                _snap_param(out, "%s|dev|%s|%d|%s" % (ref, path, i, d.name), "%s / %s / %s" % (t.name, d.name, p.name), p)
+            if d.can_have_chains:
+                for c, ch in enumerate(d.chains):
+                    cmd = _safe(ch, "mixer_device")
+                    if cmd is not None:
+                        _snap_param(out, "%s|chain|%s.%d|volume" % (ref, path, c), "%s / %s / %s volume" % (t.name, d.name, ch.name), cmd.volume)
+                        _snap_param(out, "%s|chain|%s.%d|panning" % (ref, path, c), "%s / %s / %s pan" % (t.name, d.name, ch.name), cmd.panning)
+    s = _song(cs)
+    out.append(["song|tempo", "song tempo", s.tempo, "%.2f" % s.tempo])
+    return out
+
+
+def c_set_values(cs, req):
+    """Set many values by snapshot key: items = [[key, raw], ...]. Device keys carry the device name and are skipped
+    when the device at that path changed. Returns what was set and what was skipped."""
+    s = _song(cs)
+    done, skipped = 0, []
+    for key, v in req["items"]:
+        try:
+            parts = key.split("|")
+            if parts[0] == "song" and parts[1] == "tempo":
+                s.tempo = float(v)
+            elif parts[1] == "mix":
+                md = _track(cs, parts[0]).mixer_device
+                p = md.sends[int(parts[3])] if parts[2] == "send" else getattr(md, parts[2])
+                p.value = float(v)
+            elif parts[1] == "track":
+                setattr(_track(cs, parts[0]), parts[2], bool(v))
+            elif parts[1] == "dev":
+                _, _, d = _resolve(cs, parts[0], parts[2])
+                if d.name != parts[4]:
+                    skipped.append([key, "device is now %s" % d.name])
+                    continue
+                d.parameters[int(parts[3])].value = float(v)
+            elif parts[1] == "chain":
+                ch = _chain(cs, parts[0], parts[2])
+                getattr(ch.mixer_device, parts[3]).value = float(v)
+            else:
+                skipped.append([key, "unknown key"])
+                continue
+            done += 1
+        except Exception as e:
+            skipped.append([key, "%s: %s" % (type(e).__name__, e)])
+    return {"set": done, "skipped": skipped}
 
 
 # ------------------------------------------------------------------ audio capture (optional)

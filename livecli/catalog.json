@@ -1,0 +1,607 @@
+{
+ "_about": "Plugin catalog for 'live plugins'. Each rule: regex 'match' on 'Vendor / Name' (case-insensitive). First match wins. Fields: category, styles (list), emulates (hardware or concept), notes. Contributions welcome: add the plugins you know.",
+ "categories": [
+  "compressor",
+  "limiter",
+  "multiband",
+  "dynamic-eq",
+  "de-esser",
+  "gate",
+  "transient",
+  "eq",
+  "filter",
+  "saturation",
+  "tape",
+  "channel-strip",
+  "reverb",
+  "delay",
+  "modulation",
+  "pitch",
+  "stereo",
+  "resonance",
+  "mastering",
+  "analyzer",
+  "utility",
+  "lofi",
+  "amp",
+  "noise-reduction",
+  "room-correction",
+  "instrument",
+  "hardware",
+  "midi"
+ ],
+ "rules": [
+  {
+   "match": "Align Delay|IR Measurement",
+   "category": "utility",
+   "styles": [
+    "alignment",
+    "measurement"
+   ],
+   "notes": "Align Delay: delay a track by ms/samples/distance (phase and timing alignment)"
+  },
+  {
+   "match": "LA-2A|CLA-2A",
+   "category": "compressor",
+   "styles": [
+    "opto",
+    "tube",
+    "smooth",
+    "vocals",
+    "bass"
+   ],
+   "emulates": "Teletronix LA-2A leveling amplifier",
+   "notes": "program-dependent opto attack/release, gentle; two knobs (gain, peak reduction)"
+  },
+  {
+   "match": "UADx LA-2 Compressor",
+   "category": "compressor",
+   "styles": [
+    "opto",
+    "tube",
+    "smooth",
+    "vintage"
+   ],
+   "emulates": "Teletronix LA-2 (pre-LA-2A)",
+   "notes": "darker and slower than the LA-2A"
+  },
+  {
+   "match": "CLA-3A|LA-3A",
+   "category": "compressor",
+   "styles": [
+    "opto",
+    "solid-state",
+    "faster than LA-2A"
+   ],
+   "emulates": "UREI LA-3A"
+  },
+  {
+   "match": "1176|CLA-76",
+   "category": "compressor",
+   "styles": [
+    "fet",
+    "fast",
+    "aggressive",
+    "drums",
+    "vocals",
+    "all-buttons"
+   ],
+   "emulates": "UREI/UA 1176 FET limiting amplifier",
+   "notes": "very fast attack, ratio buttons 4/8/12/20 and all-buttons"
+  },
+  {
+   "match": "Fairchild|PuigChild",
+   "category": "compressor",
+   "styles": [
+    "vari-mu",
+    "tube",
+    "glue",
+    "bus",
+    "mastering"
+   ],
+   "emulates": "Fairchild 660/670 variable-mu limiter",
+   "notes": "thick, slow, gentle ratio that grows with level"
+  },
+  {
+   "match": "Distressor",
+   "category": "compressor",
+   "styles": [
+    "vca",
+    "multi-mode",
+    "opto mode",
+    "nuke",
+    "distortion modes"
+   ],
+   "emulates": "Empirical Labs EL8 Distressor",
+   "notes": "its 'Opt' detector mode gives an opto-like (LA-2A style) curve; Dist 2/3 adds harmonics"
+  },
+  {
+   "match": "SSL.*Bus Compressor|SSL G|Glue Compressor",
+   "category": "compressor",
+   "styles": [
+    "vca",
+    "bus",
+    "glue",
+    "mix-bus"
+   ],
+   "emulates": "SSL G-series bus compressor"
+  },
+  {
+   "match": "SSL 4K|SSL Native Channel Strip|NLS Channel|RChannel|CLA (Guitars|Unplugged)|Kramer HLS|EKramer|MannyM|Maserati",
+   "category": "channel-strip",
+   "styles": [
+    "console",
+    "eq",
+    "dynamics"
+   ],
+   "emulates": "console channel (SSL / Neve / API / signature chains)"
+  },
+  {
+   "match": "NLS Buss",
+   "category": "saturation",
+   "styles": [
+    "console",
+    "summing",
+    "bus"
+   ],
+   "emulates": "Neve/SSL/EMI console summing"
+  },
+  {
+   "match": "Waves / C1 comp|Waves / C1 gate|Waves / C1 comp-gate|Waves / C1 comp-sc",
+   "category": "compressor",
+   "styles": [
+    "digital",
+    "clean",
+    "sidechain"
+   ]
+  },
+  {
+   "match": "Waves / C4|Waves / C6|LinMB",
+   "category": "multiband",
+   "styles": [
+    "clean",
+    "mastering",
+    "dynamic-eq-like"
+   ]
+  },
+  {
+   "match": "Waves / H-Comp",
+   "category": "compressor",
+   "styles": [
+    "hybrid",
+    "punch",
+    "analog character"
+   ]
+  },
+  {
+   "match": "Waves / RCompressor|Waves / Renaissance Axx|Waves / RVox|Waves / RBass",
+   "category": "compressor",
+   "styles": [
+    "opto-like",
+    "smooth",
+    "easy"
+   ],
+   "notes": "Renaissance Compressor has an opto-style (ARC) release"
+  },
+  {
+   "match": "Waves / VComp",
+   "category": "compressor",
+   "styles": [
+    "diode-bridge",
+    "vintage"
+   ],
+   "emulates": "Neve 2254"
+  },
+  {
+   "match": "Waves / MV2|Waves / MaxxVolume|Vocal Rider|Bass Rider|DynAssist",
+   "category": "compressor",
+   "styles": [
+    "leveler",
+    "rider",
+    "easy"
+   ]
+  },
+  {
+   "match": "Waves / L1|Waves / L2|Waves / L3|Waves / L316|Pro-L|Limiter$|AUPeakLimiter|Spherix Limiter|Color Limiter",
+   "category": "limiter",
+   "styles": [
+    "brickwall",
+    "maximizer",
+    "mastering"
+   ],
+   "notes": "Waves L2 measured light at 32 samples on Vinci's M2 Pro"
+  },
+  {
+   "match": "Waves / DeEsser|Sibilance|Pro-DS|RDeEsser|DeBreath",
+   "category": "de-esser",
+   "styles": [
+    "vocals"
+   ]
+  },
+  {
+   "match": "Waves / C1 gate|Pro-G|^Live / Gate$",
+   "category": "gate",
+   "styles": [
+    "gate",
+    "expander"
+   ]
+  },
+  {
+   "match": "Smack Attack|TransX|Kickstart|Snapback|Drum Buss",
+   "category": "transient",
+   "styles": [
+    "drums",
+    "attack/sustain"
+   ]
+  },
+  {
+   "match": "Pultec EQP|PuigTec EQP|Pultec HLF|Pultec MEQ|PuigTec MEQ",
+   "category": "eq",
+   "styles": [
+    "tube",
+    "passive",
+    "vintage",
+    "low-end trick"
+   ],
+   "emulates": "Pultec EQP-1A / MEQ-5 / HLF-3C"
+  },
+  {
+   "match": "Massive Passive",
+   "category": "eq",
+   "styles": [
+    "tube",
+    "passive",
+    "musical",
+    "mastering (MST)"
+   ],
+   "emulates": "Manley Massive Passive"
+  },
+  {
+   "match": "Neve 1073|Waves / V?EQ[34]",
+   "category": "eq",
+   "styles": [
+    "console",
+    "transformer",
+    "neve"
+   ],
+   "emulates": "Neve 1073 / 1066 / 1081"
+  },
+  {
+   "match": "Pro-Q|LinEQ|Waves / Q(1|2|3|4|6|8|10)$|Waves / REQ|EQ Eight|EQ Three|Channel EQ|AUParametricEQ|AUNBandEQ|AUGraphicEQ|Waves / Q-Clone|EMO-Q4",
+   "category": "eq",
+   "styles": [
+    "clean",
+    "surgical"
+   ],
+   "notes": "Pro-Q 4 also does dynamic and spectral EQ"
+  },
+  {
+   "match": "soothe",
+   "category": "resonance",
+   "styles": [
+    "dynamic resonance suppression",
+    "harshness",
+    "mud"
+   ],
+   "emulates": "oeksound soothe",
+   "notes": "FFT, fixed latency (2048 samples in soothe2): heavy at low buffers; Eco mode / oversampling off in real time"
+  },
+  {
+   "match": "Ozone",
+   "category": "mastering",
+   "styles": [
+    "suite",
+    "maximizer",
+    "eq",
+    "imager"
+   ],
+   "emulates": "iZotope Ozone",
+   "notes": "IRC maximizer modes use look-ahead: crackles at low buffers on Vinci's M2 Pro, use IRC LL or a light limiter while tracking"
+  },
+  {
+   "match": "Tonal Balance|SPAN|PAZ- Analyzer|PAZ- Meters|PAZ- Frequency|PAZ- Position|VU Meter|Spectrum|Loudline|Key Detector|Tuner",
+   "category": "analyzer",
+   "styles": [
+    "meter"
+   ]
+  },
+  {
+   "match": "Reference Probe|Loudline Probe",
+   "category": "analyzer",
+   "styles": [
+    "probe",
+    "LiveCLI"
+   ],
+   "notes": "measurement probe for agents (Live Probe Protocol)"
+  },
+  {
+   "match": "Lexicon 224|LiquidSonics|Seventh Heaven|M7 Link|VSS3|VSS4|TrueVerb|RVerb|IR-L|Hybrid Reverb|^Live / Reverb$|Convolution Reverb|Magma Springs|AUMatrixReverb|AUReverb2|NONLIN2|DVR ?250",
+   "category": "reverb",
+   "styles": [
+    "room",
+    "plate",
+    "hall",
+    "algorithmic"
+   ],
+   "notes": "Lexicon 224: classic algorithmic; Seventh Heaven / M7 Link: Bricasti M7; VSS3/VSS4: TC System 6000 rooms; Magma Springs: spring; NONLIN2: gated/non-linear; DVR 250: EMT 250"
+  },
+  {
+   "match": "Galaxy Tape Echo|Echo$|H-Delay|SuperTap|Delay|TC ?2290|MD3|MD4|Doubler|AUDelay|Lofi Space",
+   "category": "delay",
+   "styles": [
+    "tape echo",
+    "digital",
+    "doubling"
+   ],
+   "notes": "Galaxy Tape Echo: Roland RE-201 Space Echo; TC 2290: TC Electronic 2290 digital delay; Echo (Live): analog/tape-style delay"
+  },
+  {
+   "match": "Ampex ATR-102|Kramer Tape|J37|Vinyl Distortion",
+   "category": "tape",
+   "styles": [
+    "tape",
+    "saturation",
+    "mastering"
+   ],
+   "emulates": "Ampex ATR-102 / Kramer master tape"
+  },
+  {
+   "match": "Saturator|Dynamic Tube|Roar|Overdrive|Pedal|Volcano|Analog Heat|OneKnob Driver|Vitamin|Retro Fi|Erosion|Redux|ShaperBox|Kramer PIE",
+   "category": "saturation",
+   "styles": [
+    "harmonics",
+    "drive",
+    "color"
+   ],
+   "notes": "Analog Heat: Elektron hardware via Overbridge"
+  },
+  {
+   "match": "Auto Filter|FilterShaper|MetaFilter|OneKnob Filter|AUFilter|AULowpass|AUHipass|AUBandpass|AU(High|Low)ShelfFilter|EMO-F2",
+   "category": "filter",
+   "styles": [
+    "filter"
+   ]
+  },
+  {
+   "match": "Chorus|Phaser|Flanger|MetaFlanger|MondoMod|Enigma|Doppler|Auto Pan|Shifter|Curve 2|HalfTime|Beat Repeat|Grain Delay|Spectral",
+   "category": "modulation",
+   "styles": [
+    "modulation",
+    "creative"
+   ]
+  },
+  {
+   "match": "SoundShifter|UltraPitch|AUNewPitch|AUPitch|Pitch Hack|PitchLoop89|Auto Shift",
+   "category": "pitch",
+   "styles": [
+    "pitch"
+   ]
+  },
+  {
+   "match": "S1 Imager|S1 Shuffler|S1 MS Matrix|PS22|Center|Utility|Surround Panner",
+   "category": "stereo",
+   "styles": [
+    "width",
+    "mid/side"
+   ]
+  },
+  {
+   "match": "MaxxBass|LoAir|Submarine|RBass",
+   "category": "eq",
+   "styles": [
+    "bass enhancement",
+    "psychoacoustic"
+   ]
+  },
+  {
+   "match": "Multiband Dynamics|AUMultibandCompressor|Pro-MB",
+   "category": "multiband",
+   "styles": [
+    "multiband",
+    "OTT (Multiband Dynamics preset)"
+   ]
+  },
+  {
+   "match": "^Live / Compressor$",
+   "category": "compressor",
+   "styles": [
+    "clean",
+    "peak/rms/expand",
+    "sidechain"
+   ],
+   "notes": "Live Compressor in RMS mode with slow attack and auto release is a usable opto-ish substitute; it also has an expander mode"
+  },
+  {
+   "match": "Denoiser|AUSoundIsolation",
+   "category": "noise-reduction",
+   "styles": [
+    "denoise"
+   ]
+  },
+  {
+   "match": "ARC 4|ARC X",
+   "category": "room-correction",
+   "styles": [
+    "monitor correction"
+   ],
+   "notes": "monitor correction: bypass when bouncing"
+  },
+  {
+   "match": "Amp$|Cabinet|GTR|Voltage Amps",
+   "category": "amp",
+   "styles": [
+    "guitar",
+    "bass"
+   ]
+  },
+  {
+   "match": "Elektron|Analog Rytm|Digitakt|Digitone|Monomodule|Gearmulator|Subsequent 37|Prophet|External Audio Effect|External Instrument",
+   "category": "hardware",
+   "styles": [
+    "Overbridge / editor / hardware I/O"
+   ]
+  },
+  {
+   "match": "AUDynamicsProcessor",
+   "category": "compressor",
+   "styles": [
+    "clean",
+    "compressor/expander"
+   ]
+  },
+  {
+   "match": "dbx-160",
+   "category": "compressor",
+   "styles": [
+    "vca",
+    "punchy",
+    "drums",
+    "bass"
+   ],
+   "emulates": "dbx 160 VCA compressor"
+  },
+  {
+   "match": "Spherix Compressor",
+   "category": "compressor",
+   "styles": [
+    "immersive",
+    "surround"
+   ]
+  },
+  {
+   "match": "OneKnob Pumper",
+   "category": "compressor",
+   "styles": [
+    "pumping",
+    "sidechain-style"
+   ]
+  },
+  {
+   "match": "X-Click|X-Crackle|X-Hum|X-Noise|Z-Noise",
+   "category": "noise-reduction",
+   "styles": [
+    "restoration"
+   ]
+  },
+  {
+   "match": "Waves Tune",
+   "category": "pitch",
+   "styles": [
+    "pitch correction",
+    "vocals"
+   ]
+  },
+  {
+   "match": "WLM|AudioTrack|Q-Capture",
+   "category": "analyzer",
+   "styles": [
+    "loudness meter",
+    "channel tool"
+   ]
+  },
+  {
+   "match": "Waves / Saphira",
+   "category": "saturation",
+   "styles": [
+    "harmonics"
+   ]
+  },
+  {
+   "match": "Morphoder|Vocoder",
+   "category": "modulation",
+   "styles": [
+    "vocoder"
+   ]
+  },
+  {
+   "match": "Waves / NX|Nx Ambisonics|UM22[56]",
+   "category": "stereo",
+   "styles": [
+    "headphones",
+    "surround",
+    "upmix"
+   ]
+  },
+  {
+   "match": "EMO-Generator|AURogerBeep",
+   "category": "utility",
+   "styles": [
+    "signal generator"
+   ]
+  },
+  {
+   "match": "AUDistortion",
+   "category": "saturation",
+   "styles": [
+    "distortion"
+   ]
+  },
+  {
+   "match": "AUNetSend|AURoundTripAAC|iZotope / Relay",
+   "category": "utility",
+   "styles": [
+    "routing",
+    "codec preview"
+   ]
+  },
+  {
+   "match": "^Live / (Audio Effect Rack|MIDI Effect Rack|Variations|Performer|Prearranger|Arrangement Looper|Looper)$",
+   "category": "utility",
+   "styles": [
+    "rack",
+    "performance",
+    "looper"
+   ]
+  },
+  {
+   "match": "^Live / CV ",
+   "category": "hardware",
+   "styles": [
+    "CV / modular (CV Tools)"
+   ]
+  },
+  {
+   "match": "^Live / (LFO|Envelope Follower|Shaper|Re-Enveloper|Vector Map)$",
+   "category": "modulation",
+   "styles": [
+    "modulator (Max for Live)"
+   ]
+  },
+  {
+   "match": "^Live / (Corpus|Resonators)$",
+   "category": "modulation",
+   "styles": [
+    "resonator",
+    "physical modeling"
+   ]
+  },
+  {
+   "match": "^Live / (DS |Emit|Tree Tone|Vector FM|Vector Grain)",
+   "category": "instrument",
+   "styles": [
+    "instrument (drum synth / Max for Live)"
+   ]
+  },
+  {
+   "match": "^Live / (Bouncy Notes|CC Control|Envelope MIDI|Melodic Steps|MIDI Monitor|MPE Control|Rhythmic Steps|Rotating Rhythm Generator|Shaper MIDI|SQ Sequencer|Step Arp)$",
+   "category": "midi",
+   "styles": [
+    "midi effect / generator"
+   ]
+  },
+  {
+   "match": "Kontakt|Drift|Wavetable|Operator|Analog$|Simpler|Sampler|Electric|Collision|Tension|Meld|Drum Rack|Instrument Rack|Impulse|Granulator|Electric Grand|GW |AUSampler|AUMIDISynth|DLSMusicDevice|Bass$|Poli",
+   "category": "instrument",
+   "styles": [
+    "instrument"
+   ]
+  },
+  {
+   "match": "Arpeggiator|Chord|Note Length|Pitch$|Random|Scale|Velocity|MidiShaper|Note Echo|Expression Control",
+   "category": "midi",
+   "styles": [
+    "midi effect"
+   ]
+  }
+ ]
+}
