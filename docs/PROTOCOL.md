@@ -124,7 +124,7 @@ Also pushed to every subscriber: `{"event":"instance_added|instance_removed|inst
 
 ## 6. Plugin requirements (VST3)
 - Stereo in/out (mono variant optional). Pass-through, zero latency, no tail.
-- Parameters: `Probe ID` (0…999, stepCount 999, shown as an integer, automatable off) and nothing else that affects processing. Few parameters, so Live exposes them to its API without configuration.
+- Parameters: `Probe ID` (0…999, stepCount 999, shown as an integer) and nothing else that affects processing. It must be **automatable** (`kCanAutomate`): Ableton Live hides VST3 parameters that are not automatable, and the CLI sets the ID through Live's API. Few parameters, so Live exposes them without configuration.
 - Implement `IInfoListener` for the track name, index and color. Re-send `instance_changed` when they change.
 - No UI is required. A minimal view (ID, track, product link) is allowed.
 - CPU: the audio-thread cost must be a memcpy into the ring buffer. Analysis must be shared and throttled (≤ 30 Hz per instance) and must stop for instances without signal.
