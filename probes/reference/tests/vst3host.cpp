@@ -8,6 +8,7 @@
 //   signal: [<track name>=]<kind>[@inplace][@mono]
 //   kind:   sine:<hz>:<dBFS> | sinel:<hz>:<dBFS> (left only) | noise:<dBFS> | anti:<dBFS> | silence
 //           | eqnoise:<dBFS>:<hz>:<gain dB> (the same noise as `noise`, through an RBJ peaking EQ, Q 1)
+//           | dnoise:<dBFS>:<ms> (the same noise as `noise`, delayed by <ms>; negative <ms>: also inverted)
 //   @inplace: input and output share the same buffers (as some hosts do)
 //   @mono:    mono bus arrangement (1 channel)
 //   @p<N>:    instance of the N-th bundle when <plugin.vst3> is a comma-separated list
@@ -43,6 +44,8 @@ struct Signal {
     int plugin = 1;
     double phase = 0;
     std::mt19937 rng{1234};
+    std::vector<float> dl, dr;  // dnoise delay lines
+    size_t dpos = 0;
     // peaking EQ state (direct form I, per channel)
     double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, xs[2][2] = {}, ys[2][2] = {};
     void prepareEq(double sr) {
@@ -70,6 +73,14 @@ struct Signal {
                 x = (float)(a * g(rng));
                 y = (float)(a * g(rng));
                 if (kind == "eqnoise") { x = eq(0, x); y = eq(1, y); }
+            } else if (kind == "dnoise") {
+                float nx = (float)(a * g(rng)), nyv = (float)(a * g(rng));
+                if (dl.empty()) { size_t d = (size_t)std::lround(std::fabs(hz) * sr / 1000.0); dl.assign(d + 1, 0.f); dr.assign(d + 1, 0.f); }
+                dl[dpos] = nx; dr[dpos] = nyv;
+                size_t rd = (dpos + 1) % dl.size();
+                float sgn = hz < 0 ? -1.f : 1.f;
+                x = sgn * dl[rd]; y = sgn * dr[rd];
+                dpos = rd;
             } else if (kind == "anti") {
                 x = (float)(a * g(rng));
                 y = -x;
@@ -99,6 +110,7 @@ static Signal parseSignal(std::string s) {
     g.kind = p[0];
     if ((g.kind == "sine" || g.kind == "sinel") && p.size() >= 3) { g.hz = atof(p[1].c_str()); g.db = atof(p[2].c_str()); }
     else if ((g.kind == "noise" || g.kind == "anti") && p.size() >= 2) g.db = atof(p[1].c_str());
+    else if (g.kind == "dnoise" && p.size() >= 3) { g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); }
     else if (g.kind == "eqnoise" && p.size() >= 4) {
         g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); g.gain = atof(p[3].c_str());
     }
@@ -194,13 +206,18 @@ int main(int argc, char** argv) {
         printf("instance %d: latency %u tail %u\n", k - 2, in->proc->getLatencySamples(), in->proc->getTailSamples());
         // track info, like Live does
         if (FUnknownPtr<ChannelContext::IInfoListener> il{in->ctrl.get()}) {
-            auto attrs = HostAttributeList::make();
+            // like Live 12: every call carries only the keys that changed (color on load, then the name…)
             std::string name = in->sig.name.empty() ? "Test " + std::to_string(k - 2) + " " + argv[k] : in->sig.name;
             auto u16 = VST3::StringConvert::convert(name);
-            attrs->setString(ChannelContext::kChannelNameKey, (const TChar*)u16.data());
-            attrs->setInt(ChannelContext::kChannelIndexKey, k - 2);
-            attrs->setInt(ChannelContext::kChannelColorKey, (int64)0xFFFF8800u + (k - 2));
-            il->setChannelContextInfos(attrs);
+            auto color = HostAttributeList::make();
+            color->setInt(ChannelContext::kChannelColorKey, (int64)0xFFFF8800u + (k - 2));
+            il->setChannelContextInfos(color);
+            auto named = HostAttributeList::make();
+            named->setString(ChannelContext::kChannelNameKey, (const TChar*)u16.data());
+            il->setChannelContextInfos(named);
+            auto index = HostAttributeList::make();
+            index->setInt(ChannelContext::kChannelIndexKey, k - 2);
+            il->setChannelContextInfos(index);
         } else {
             printf("controller has no IInfoListener!\n");
         }

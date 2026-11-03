@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -128,6 +129,97 @@ static void testSecondAlignment() {
     }
     hub.remove(a);
     hub.remove(b);
+}
+
+// ---- delay: pre/post with a known delay, measured through the protocol
+struct DelayCase {
+    long delay;      // B late by this many samples (negative: A late)
+    float bGain = 1; // -1: inverted
+    bool sine = false, silentB = false;
+    double srB = 48000;
+};
+
+static JValue runDelayCase(const DelayCase& dc, double tBase) {
+    Hub& hub = Hub::get();
+    auto a = hub.add(), b = hub.add();
+    a->setFormat(2, 48000);
+    b->setFormat(2, dc.srB);
+    Session s;
+    const double sr = 48000;
+    const std::string req = R"({"cmd":"delay","rid":9,"a":")" + a->uid + R"(","b":")" + b->uid + R"(","seconds":3,"max_lag_ms":200})";
+    const std::string firstLine = Protocol::handle(req, s, tBase);  // arms the capture, answered later
+    JValue first;
+    if (!firstLine.empty()) first = parse(firstLine);
+    CHECK(firstLine.empty() && s.pending.size() == 1);
+    const int block = 256;
+    const long D = std::labs(dc.delay);
+    std::vector<float> src(16 * 48000 + D), l(block), r(block), l2(block), r2(block);
+    std::mt19937 rng(77);
+    std::normal_distribution<float> g(0.f, 0.1f);
+    for (size_t i = 0; i < src.size(); i++) src[i] = dc.sine ? 0.3f * (float)std::sin(2 * M_PI * 1000 * i / sr) : g(rng);
+    for (long done = 0; done + block <= 8 * 48000; done += block) {
+        for (int i = 0; i < block; i++) {
+            long n = done + i + D;
+            float xa = src[(size_t)(dc.delay >= 0 ? n : n - D)], xb = src[(size_t)(dc.delay >= 0 ? n - D : n)];
+            l[i] = r[i] = xa;
+            l2[i] = r2[i] = dc.silentB ? 0.f : dc.bGain * xb;
+        }
+        double t = tBase + done / sr;
+        a->pushAudio(l.data(), r.data(), block, sr, done, t);
+        b->pushAudio(l2.data(), r2.data(), block, dc.srB, done, t + 40e-6);  // post runs a little later
+        if ((done / block) % 16 == 0) { a->analyze(); b->analyze(); }
+    }
+    a->analyze();
+    b->analyze();
+    std::string out;
+    Protocol::duePending(s, tBase + 8.0, out);
+    if (out.empty()) Protocol::duePending(s, tBase + 30.0, out);  // past the deadline: final answer
+    JValue v = parse(out.empty() ? "{}" : out.substr(0, out.find('\n')));
+    hub.remove(a);
+    hub.remove(b);
+    return first.get("ok") ? first : v;
+}
+
+static void testDelay() {
+    const double t0 = std::floor(monoNow()) - 300;
+    JValue v = runDelayCase({480}, t0);
+    printf("  delay 480 samples: got %.0f, peak %.3f, polarity %.0f, ambiguity %.3f, aligned %s\n", num(v.get("delay_samples")),
+           num(v.get("correlation_peak")), num(v.get("polarity")), num(v.get("ambiguity")),
+           v.get("aligned") ? v.get("aligned")->str.c_str() : "?");
+    CHECK(v.get("ok") && v.get("ok")->b && num(v.get("rid")) == 9);
+    NEAR(num(v.get("delay_samples")), 480, 0);
+    NEAR(num(v.get("delay_ms")), 10.0, 0.001);
+    CHECK(num(v.get("correlation_peak")) > 0.99 && num(v.get("polarity")) == 1 && num(v.get("ambiguity")) < 0.2);
+    CHECK(v.get("aligned") && v.get("aligned")->str == "block");
+
+    v = runDelayCase({100, -1.f}, t0 + 100);
+    printf("  delay 100 inverted: got %.0f, polarity %.0f\n", num(v.get("delay_samples")), num(v.get("polarity")));
+    NEAR(num(v.get("delay_samples")), 100, 0);
+    CHECK(num(v.get("polarity")) == -1);
+
+    v = runDelayCase({-240}, t0 + 200);
+    printf("  B early by 240: got %.0f\n", num(v.get("delay_samples")));
+    NEAR(num(v.get("delay_samples")), -240, 0);
+
+    v = runDelayCase({0}, t0 + 300);
+    NEAR(num(v.get("delay_samples")), 0, 0);
+
+    DelayCase sil{480};
+    sil.silentB = true;
+    v = runDelayCase(sil, t0 + 400);
+    printf("  silent b: %s\n", v.get("error") ? v.get("error")->str.c_str() : "?");
+    CHECK(v.get("ok") && !v.get("ok")->b && v.get("code")->str == "busy");
+
+    DelayCase sine{48};
+    sine.sine = true;
+    v = runDelayCase(sine, t0 + 500);
+    printf("  1 kHz sine: delay %.0f ambiguity %.3f\n", num(v.get("delay_samples")), num(v.get("ambiguity")));
+    CHECK(num(v.get("ambiguity")) > 0.9);
+
+    DelayCase rates{0};
+    rates.srB = 44100;
+    v = runDelayCase(rates, t0 + 600);
+    CHECK(v.get("ok") && !v.get("ok")->b && v.get("code")->str == "bad_request");
 }
 
 static void testRing() {
@@ -317,6 +409,7 @@ int main() {
     testJson();
     testJsonText();
     testSecondAlignment();
+    testDelay();
     testRing();
     testSnapshot();
     testCommands();

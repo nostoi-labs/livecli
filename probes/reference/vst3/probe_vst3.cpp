@@ -233,14 +233,22 @@ tresult PLUGIN_API ProbeController::notify(Vst::IMessage* message) {
 
 tresult PLUGIN_API ProbeController::setChannelContextInfos(Vst::IAttributeList* list) {
     if (!list) return kResultFalse;
+    // Live 12 sends only the keys that changed (on load just the color, after a rename just the
+    // name): update what is present, keep the rest
     Vst::String128 name{};
-    hasName_ = list->getString(Vst::ChannelContext::kChannelNameKey, name, sizeof(name)) == kResultTrue;
-    name_ = hasName_ ? utf8(name) : std::string();
+    if (list->getString(Vst::ChannelContext::kChannelNameKey, name, sizeof(name)) == kResultTrue) {
+        hasName_ = true;
+        name_ = utf8(name);
+    }
     int64 v = 0;
-    hasIndex_ = list->getInt(Vst::ChannelContext::kChannelIndexKey, v) == kResultTrue;
-    index_ = hasIndex_ ? v : 0;
-    hasColor_ = list->getInt(Vst::ChannelContext::kChannelColorKey, v) == kResultTrue;
-    color_ = hasColor_ ? (uint32_t)(v & 0xFFFFFF) : 0;
+    if (list->getInt(Vst::ChannelContext::kChannelIndexKey, v) == kResultTrue) {
+        hasIndex_ = true;
+        index_ = v;
+    }
+    if (list->getInt(Vst::ChannelContext::kChannelColorKey, v) == kResultTrue) {
+        hasColor_ = true;
+        color_ = (uint32_t)(v & 0xFFFFFF);
+    }
     apply();
     return kResultTrue;
 }

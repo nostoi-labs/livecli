@@ -54,6 +54,10 @@ void Instance::setProbeId(int v) {
 void Instance::setTrack(bool hasName, const std::string& name, bool hasIndex, long long index, bool hasColor,
                         uint32_t rgb) {
     std::lock_guard<std::mutex> lk(idm_);
+    rgb &= 0xFFFFFF;
+    if (id_.hasTrack == hasName && (!hasName || id_.track == name) && id_.hasIndex == hasIndex &&
+        (!hasIndex || id_.trackIndex == index) && id_.hasColor == hasColor && (!hasColor || id_.color == rgb))
+        return;  // nothing changed: no instance_changed event
     id_.hasTrack = hasName;
     id_.track = hasName ? name : std::string();
     id_.hasIndex = hasIndex;
@@ -65,6 +69,7 @@ void Instance::setTrack(bool hasName, const std::string& name, bool hasIndex, lo
 
 void Instance::setLabel(const std::string& label) {
     std::lock_guard<std::mutex> lk(idm_);
+    if (id_.label == label.substr(0, 256)) return;
     id_.label = label.substr(0, 256);
     version_.fetch_add(1, std::memory_order_release);
 }
@@ -119,6 +124,7 @@ int Instance::analyze() {
     while (ring_.read(bi, bufL_.data(), bufR_.data())) {
         if (bi.sampleRate != sr_ && bi.sampleRate > 0) prepare(bi.sampleRate);
         if (bi.channels != engineChannels_) engine_->setChannels(engineChannels_ = bi.channels);
+        if (capUntil_ > 0) capture(bufL_.data(), bufR_.data(), bi);
         int off = 0;
         while (off < bi.frames) {
             int n = std::min(bi.frames - off, tickLen_ - cur_.n);
@@ -446,6 +452,73 @@ std::vector<Instance::SecondBands> Instance::secondBands(int seconds, double now
         out.push_back(b);
     }
     return out;
+}
+
+// ---------------------------------------------------------------- delay capture
+
+namespace {
+constexpr size_t kCapFrames = 1 << 20;      // 21.8 s at 48 kHz, 10.9 s at 96 kHz (4 MB, only while armed)
+constexpr size_t kCapBlocks = 1 << 15;
+}  // namespace
+
+void Instance::armCapture(double now, double keepS) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (cap_.empty()) {
+        cap_.assign(kCapFrames, 0.f);
+        capBlocks_.assign(kCapBlocks, CaptureBlock{0, 0, 0});
+        capBlockHead_ = capBlockCount_ = 0;
+        capRunStart_ = capWritten_;
+        capDropped_ = ring_.dropped();
+    }
+    capUntil_ = std::max(capUntil_, now + keepS);
+}
+
+void Instance::capture(const float* l, const float* r, const BlockInfo& bi) {
+    if (bi.t > capUntil_) {  // nobody asked for a while: free the memory
+        std::vector<float>().swap(cap_);
+        std::vector<CaptureBlock>().swap(capBlocks_);
+        capUntil_ = -1;
+        return;
+    }
+    const uint64_t d = ring_.dropped();
+    if (d != capDropped_ || bi.sampleRate != capRate_) {  // a gap or a new rate: start a new run
+        capDropped_ = d;
+        capRate_ = bi.sampleRate;
+        capRunStart_ = capWritten_;
+        capBlockCount_ = 0;
+    }
+    const uint64_t mask = kCapFrames - 1;
+    for (int i = 0; i < bi.frames; i++) cap_[(capWritten_ + i) & mask] = bi.channels > 1 ? 0.5f * (l[i] + r[i]) : l[i];
+    capBlocks_[capBlockHead_] = CaptureBlock{capWritten_, bi.t, bi.frames};
+    capBlockHead_ = (capBlockHead_ + 1) % kCapBlocks;
+    capBlockCount_ = std::min(capBlockCount_ + 1, kCapBlocks);
+    capWritten_ += (uint64_t)bi.frames;
+}
+
+bool Instance::copyCapture(CaptureCopy& out) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (cap_.empty() || capBlockCount_ == 0) return false;
+    uint64_t first = std::max(capRunStart_, capWritten_ > kCapFrames ? capWritten_ - kCapFrames : 0);
+    // start at a block boundary that is still in the block ring
+    out.blocks.clear();
+    for (size_t i = 0; i < capBlockCount_; i++) {
+        const CaptureBlock& b = capBlocks_[(capBlockHead_ + kCapBlocks - capBlockCount_ + i) % kCapBlocks];
+        if (b.idx >= first) out.blocks.push_back(b);
+    }
+    if (out.blocks.empty()) return false;
+    first = out.blocks.front().idx;
+    const uint64_t n = capWritten_ - first, mask = kCapFrames - 1;
+    out.x.resize((size_t)n);
+    for (uint64_t i = 0; i < n; i++) out.x[(size_t)i] = cap_[(first + i) & mask];
+    out.first = first;
+    out.sampleRate = capRate_;
+    return true;
+}
+
+double Instance::captureCapacityS() const {
+    std::lock_guard<std::mutex> lk(m_);
+    const double sr = sr_ > 0 ? sr_ : 48000.0;
+    return kCapFrames / sr;
 }
 
 void Instance::reset() {

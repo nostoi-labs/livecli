@@ -13,7 +13,7 @@ if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
     set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "")
 endif()
 
-project(reference-probe VERSION 0.1.0 LANGUAGES C CXX)
+project(reference-probe VERSION 0.1.1 LANGUAGES C CXX)
 if(APPLE)
     enable_language(OBJCXX)
 endif()
@@ -34,10 +34,14 @@ add_library(liveprobe_core STATIC
     core/instance.cpp
     core/hub.cpp
     core/server.cpp
+    core/delay.cpp
 )
 target_include_directories(liveprobe_core PUBLIC core)
 find_package(Threads REQUIRED)
 target_link_libraries(liveprobe_core PUBLIC Threads::Threads)
+if(APPLE)
+    target_link_libraries(liveprobe_core PUBLIC "-framework Accelerate")
+endif()
 
 # ---- reference DSP -----------------------------------------------------------
 add_library(reference_engine STATIC

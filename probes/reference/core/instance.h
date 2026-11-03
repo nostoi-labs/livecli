@@ -71,6 +71,25 @@ public:
     void reset();
     uint64_t dropped() const { return ring_.dropped(); }
 
+    // ---- delay capture (mid signal, only while a client asks for it) ----
+    struct CaptureBlock {
+        uint64_t idx;   // index of the first frame in the capture stream
+        double t;       // server clock at the start of the block (from the audio thread)
+        int32_t frames;
+    };
+    struct CaptureCopy {
+        double sampleRate = 0;
+        std::vector<float> x;               // contiguous mid samples, oldest first
+        uint64_t first = 0;                 // stream index of x[0]
+        std::vector<CaptureBlock> blocks;   // blocks inside x, oldest first
+    };
+    /// Server thread: starts (or keeps) capturing for `keepS` seconds from `now`.
+    void armCapture(double now, double keepS = 120.0);
+    /// Server thread: the captured run (no gaps). False when nothing is captured yet.
+    bool copyCapture(CaptureCopy& out);
+    /// Capacity of the capture in seconds at the current rate (0 when unknown).
+    double captureCapacityS() const;
+
 private:
     struct Tick {
         double t = 0;
@@ -130,6 +149,14 @@ private:
     long silentRun_ = 0;
     double resetT_ = 0;
     std::vector<float> bufL_, bufR_;
+
+    // delay capture (guarded by m_)
+    void capture(const float* l, const float* r, const BlockInfo& bi);
+    std::vector<float> cap_;
+    std::vector<CaptureBlock> capBlocks_;
+    uint64_t capWritten_ = 0, capRunStart_ = 0, capDropped_ = 0;
+    size_t capBlockHead_ = 0, capBlockCount_ = 0;
+    double capUntil_ = -1, capRate_ = 0;
 };
 
 }  // namespace liveprobe

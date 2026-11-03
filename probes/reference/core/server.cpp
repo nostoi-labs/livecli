@@ -19,6 +19,7 @@
 #include <cstring>
 #include <map>
 
+#include "delay.h"
 #include "engine.h"
 #include "hub.h"
 
@@ -120,7 +121,74 @@ bool hasCap(const char* c) {
     return false;
 }
 
+std::string jsonOf(const JValue* v) {
+    if (!v) return "";
+    JWriter w;
+    writeValue(w, *v);
+    return w.take();
+}
+
+/// Tries a pending delay: true when `out` holds the final answer line.
+bool runDelay(const PendingDelay& p, double now, std::string& out) {
+    Hub& hub = Hub::get();
+    auto a = hub.findUid(p.a), b = hub.findUid(p.b);
+    auto reply = [&](bool ok) {
+        JWriter w;
+        w.beginObject();
+        w.key("ok").boolean(ok);
+        if (!p.ridJson.empty()) w.key("rid").raw(p.ridJson);
+        return w;
+    };
+    if (!a || !b) {
+        JWriter w = reply(false);
+        w.key("error").str("instance removed while measuring");
+        w.key("code").str("not_found");
+        w.endObject();
+        out = w.take();
+        return true;
+    }
+    Instance::CaptureCopy ca, cb;
+    a->copyCapture(ca);
+    b->copyCapture(cb);
+    DelayResult r = measureDelay(ca, cb, p.seconds, p.maxLagS);
+    if (!r.ok && r.retry && now < p.deadline) return false;
+    JWriter w = reply(r.ok);
+    if (r.ok) {
+        w.key("a").str(p.a);
+        w.key("b").str(p.b);
+        w.key("delay_samples").integer(r.delaySamples);
+        w.key("delay_ms").number(r.delaySamples * 1000.0 / r.sampleRate, 3);
+        w.key("correlation_peak").number(r.correlationPeak, 3);
+        w.key("polarity").integer(r.polarity);
+        w.key("ambiguity").number(r.ambiguity, 3);
+        w.key("sample_rate").number(r.sampleRate, 1);
+        w.key("seconds").number(r.seconds, 2);
+        w.key("aligned").str(r.aligned);
+    } else {
+        w.key("error").str(r.error);
+        w.key("code").str(r.code);
+    }
+    w.endObject();
+    out = w.take();
+    return true;
+}
+
 }  // namespace
+
+void Protocol::duePending(Session& s, double now, std::string& out) {
+    for (size_t i = 0; i < s.pending.size();) {
+        PendingDelay& p = s.pending[i];
+        std::string line;
+        if (now >= p.due && runDelay(p, now, line)) {
+            out += line;
+            out += '\n';
+            s.pending.erase(s.pending.begin() + (long)i);
+            continue;
+        }
+        if (now >= p.due) p.due = now + 0.25;
+        i++;
+    }
+}
 
 std::string Protocol::handle(const std::string& line, Session& s, double now) {
     JValue req;
@@ -219,6 +287,32 @@ std::string Protocol::handle(const std::string& line, Session& s, double now) {
         if (flag(req, "transfer")) r.w.key("transfer").null();
         return r.done();
     }
+    if (cmd == "delay") {
+        if (!hasCap("delay")) return error(rid, "unsupported", "delay is not supported");
+        auto a = resolve(req, rid, err, "a");
+        if (!a) return err;
+        auto b = resolve(req, rid, err, "b");
+        if (!b) return err;
+        if (a == b) return error(rid, "bad_request", "a and b are the same instance");
+        PendingDelay p;
+        p.ridJson = jsonOf(rid);
+        p.a = a->uid;
+        p.b = b->uid;
+        p.seconds = numberOr(req, "seconds", 5, 0.5, 10);
+        p.maxLagS = numberOr(req, "max_lag_ms", 1000, 1, 1000) / 1000.0;
+        const double need = p.seconds + 2 * p.maxLagS + 0.5;
+        if (need > std::min(a->captureCapacityS(), b->captureCapacityS()))
+            return error(rid, "bad_request", "seconds + 2 * max_lag too long for this sample rate");
+        a->armCapture(now);
+        b->armCapture(now);
+        p.due = now;
+        p.deadline = now + need + 2.0;
+        std::string line;
+        if (runDelay(p, now, line)) return line;  // already captured: answer now
+        p.due = now + 0.25;
+        s.pending.push_back(p);
+        return std::string();
+    }
     if (cmd == "subscribe") {
         Subscription sub;
         sub.hz = numberOr(req, "hz", 10, 1, 30);
@@ -313,6 +407,10 @@ void Protocol::dueEvents(Session& s, double now, std::string& out) {
 
 int Protocol::msUntilDue(const Session& s, double now, int cap) {
     int best = cap;
+    for (auto& p : s.pending) {
+        int ms = (int)std::ceil((p.due - now) * 1000.0);
+        if (ms < best) best = ms < 0 ? 0 : ms;
+    }
     for (auto& sub : s.subs) {
         int ms = (int)std::ceil((sub.next - now) * 1000.0);
         if (ms < best) best = ms < 0 ? 0 : ms;
@@ -528,8 +626,11 @@ void Server::run() {
                     c.in.erase(0, pos + 1);
                     if (!line.empty() && line.back() == '\r') line.pop_back();
                     if (line.find_first_not_of(" \t") == std::string::npos) continue;
-                    c.out += Protocol::handle(line, c.session, monoNow());
-                    c.out += '\n';
+                    std::string resp = Protocol::handle(line, c.session, monoNow());
+                    if (!resp.empty()) {
+                        c.out += resp;
+                        c.out += '\n';
+                    }
                 }
                 if (c.in.size() > 1 << 20) { c.closing = true; }
             }
@@ -567,6 +668,7 @@ void Server::run() {
             if (c.closing) continue;
             if (!events.empty() && c.session.events) c.out += events;
             Protocol::dueEvents(c.session, now, c.out);
+            Protocol::duePending(c.session, now, c.out);
             while (!c.out.empty()) {
                 ssize_t n = send(c.fd, c.out.data(), c.out.size(), 0);
                 if (n > 0) { c.out.erase(0, (size_t)n); continue; }

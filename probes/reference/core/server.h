@@ -23,18 +23,29 @@ struct Subscription {
     double next = 0;
 };
 
+/// A `delay` request waiting for enough captured audio.
+struct PendingDelay {
+    std::string ridJson;  // "" = no rid
+    std::string a, b;
+    double seconds = 5, maxLagS = 1, due = 0, deadline = 0;
+};
+
 /// Per-connection state.
 struct Session {
     bool events = false;  // receives instance_added/removed/changed
     std::vector<Subscription> subs;
+    std::vector<PendingDelay> pending;
 };
 
 class Protocol {
 public:
-    /// One request line in, one response line out (no trailing newline).
+    /// One request line in, one response line out (no trailing newline). "" = answered later
+    /// (a `delay` waiting for audio: see duePending).
     static std::string handle(const std::string& line, Session& s, double now);
     /// Appends due snapshot event lines ("...\n") for the session's subscriptions.
     static void dueEvents(Session& s, double now, std::string& out);
+    /// Appends the answers of `delay` requests that are ready ("...\n").
+    static void duePending(Session& s, double now, std::string& out);
     /// Milliseconds until the session's next due subscription (or `cap`).
     static int msUntilDue(const Session& s, double now, int cap);
 };
