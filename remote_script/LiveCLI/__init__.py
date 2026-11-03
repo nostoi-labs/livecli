@@ -19,7 +19,19 @@ from _Framework.ControlSurface import ControlSurface
 from . import commands
 
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("LIVECLI_PORT", "9878"))
+
+
+def _port():
+    if os.environ.get("LIVECLI_PORT"):
+        return int(os.environ["LIVECLI_PORT"])
+    try:
+        with open(os.path.expanduser("~/.config/live-cli/config.json")) as fh:
+            return int(json.load(fh).get("port", 9878))
+    except Exception:
+        return 9878
+
+
+PORT = _port()
 
 
 def create_instance(c_instance):
@@ -87,7 +99,7 @@ class LiveCLI(ControlSurface):
         finally:
             c.close()
 
-    def schedule(self, ticks, fn):
+    def livecli_after(self, ticks, fn):
         """Run fn() on the main thread after `ticks` display ticks (~100 ms each)."""
         self._later.append([ticks, fn])
 

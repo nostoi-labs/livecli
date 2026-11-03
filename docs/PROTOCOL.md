@@ -13,7 +13,8 @@ Status: draft 0.1 (2026-11-03). Breaking changes are allowed until 1.0.
   - The directory is created with mode `0700` if missing. The socket is `0600`.
   - On startup, a server deletes stale sockets of its own product whose `<pid>` is no longer alive.
   - When the last instance is destroyed, the server closes and deletes its socket.
-- Clients find servers by listing `*.sock` in that directory. Every socket is tried; a socket that refuses connections is ignored.
+- macOS limits a Unix socket path to 104 bytes. If the path above would be longer (long user names), the server uses `/tmp/LiveProbes-<uid>/<product>-<pid>.sock` instead (directory `0700`), where `<uid>` is the numeric user id.
+- Clients find servers by listing `*.sock` in both directories. Every socket is tried; a socket that refuses connections is ignored.
 - Local machine only: no TCP, no network.
 - Optional UDP fallback, for environments that cannot open Unix sockets (Max for Live): see §7.
 

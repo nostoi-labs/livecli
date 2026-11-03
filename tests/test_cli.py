@@ -101,6 +101,31 @@ class LiveCommands(unittest.TestCase):
         self.assertEqual(run("send", "bass", "A", "-12")[0], 0)
         self.assertIn("-12.0", str(SONG.tracks[1].mixer_device.sends[0]))
 
+    def test_pan_and_record(self):
+        self.assertEqual(run("pan", "bass", "20L")[0], 0)
+        self.assertAlmostEqual(SONG.tracks[1].mixer_device.panning.value, -0.4)
+        self.assertEqual(str(SONG.tracks[1].mixer_device.panning), "20L")
+        run("pan", "bass", "C")
+        self.assertEqual(SONG.tracks[1].mixer_device.panning.value, 0.0)
+        self.assertEqual(run("pan", "bass", "20")[0], 1)
+        SONG.record_mode = False
+        run("record")
+        self.assertTrue(SONG.record_mode)
+        run("record", "off")
+        self.assertFalse(SONG.record_mode)
+
+    def test_probe_add_without_probe_server(self):
+        # the plugin loads and gets its ID, then the CLI waits for it on a socket: here there is none
+        n = len(SONG.tracks[2].devices)
+        code, out, err = run("probe-add", "synth", "first")
+        self.assertEqual(code, 1)
+        self.assertIn("does not report", err)
+        d = SONG.tracks[2].devices[0]
+        self.assertEqual(d.name, "Loudline Probe")
+        self.assertGreater(d.parameters[1].value, 0)
+        del SONG.tracks[2].devices[0]
+        self.assertEqual(len(SONG.tracks[2].devices), n)
+
     def test_routing(self):
         code, r = run_json("routing", "vox", "Ext. Out", "3/4")
         self.assertEqual(r["after"], ["Ext. Out", "3/4"])

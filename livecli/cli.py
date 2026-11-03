@@ -67,7 +67,8 @@ def print_devices(devs, ind="    "):
 # ================================================================== info
 @command("ping", "ping", "check the connection to Live", "info")
 def c_ping(a):
-    out(call("ping"), "pong (LiveCLI remote script v%s)" % call("ping")["version"])
+    r = call("ping")
+    out(r, "pong (LiveCLI remote script v%s)" % r["version"])
 
 
 @command("song", "song", "tempo, signature, transport, loop, counts", "info", aliases=("stato", "status"))
@@ -278,7 +279,8 @@ def c_stop_clips(a):
 
 @command("record", "record on|off", "arrangement record button", "transport")
 def c_record(a):
-    out(call("record", on=(a[0] == "on") if a else None))
+    r = call("record", on=(a[0] == "on")) if a else call("record")
+    out(r, "record %s" % ("on" if r else "off"))
 
 
 @command("undo", "undo", "undo the last change in Live", "transport")
@@ -402,9 +404,22 @@ command("mute", "mute <track> on|off", "mute", "tracks")(_toggle("mute"))
 command("arm", "arm <track> on|off", "record arm", "tracks")(_toggle("arm"))
 
 
+def _pan_value(v):
+    """'20L' -> -0.4, 'C' -> 0, '35R' -> 0.7 (Live's panning: -1 = 50L, 1 = 50R)."""
+    t = v.strip().upper()
+    if t in ("C", "0", "CENTER", "CENTRE"):
+        return 0.0
+    n = parse_number(t)
+    if n is None or not (t.endswith("L") or t.endswith("R")):
+        raise LiveError("pan: use 20L, C or 35R (or =raw -1..1)")
+    return max(-1.0, min(1.0, (-n if t.endswith("L") else n) / 50.0))
+
+
 def _mixer_value(kind, v):
     if v.startswith("="):
         return {"value": float(v[1:])}
+    if kind == "pan":
+        return {"value": _pan_value(v)}
     if kind in ("volume", "send") and not v.lower().endswith("db") and parse_number(v) is not None:
         return {"text": v + " dB"}
     return {"text": v}
@@ -736,6 +751,8 @@ def c_probe_add(a):
     after, first = None, False
     if rest[:1] == ["after"] and len(rest) > 1:
         after = find_device(t, rest[1])["path"]
+        if "." in after:
+            raise LiveError("probe-add works on top-level devices (%s is inside a rack)" % rest[1])
         rest = rest[2:]
     elif rest[:1] == ["first"]:
         first, rest = True, rest[1:]
@@ -753,16 +770,17 @@ def c_probe_add(a):
     except LiveError:
         pass
     pid = next(n for n in range(1, 1000) if n not in used)
-    before = len(track(t["ref"])["devices"])
-    r = call("load", track=t["ref"], path=path, after=after, timeout=30)
+    before = [d["name"] for d in track(t["ref"])["devices"]]
+    call("load", track=t["ref"], path=path, after=after, timeout=30)
     time.sleep(0.4)
-    devs = track(t["ref"])["devices"]
-    if len(devs) != before + 1:
-        raise LiveError("probe not loaded as expected: %s" % [d["name"] for d in devs])
-    new_i = (int(after) + 1) if after is not None and "." not in after else len(devs) - 1
-    if first and new_i != 0:
-        call("move_device", track=t["ref"], device=str(new_i), position=0)
-        new_i = 0
+    now = [d["name"] for d in track(t["ref"])["devices"]]
+    if len(now) != len(before) + 1:
+        raise LiveError("probe not loaded as expected: %s" % now)
+    new_i = next((k for k in range(len(now)) if k >= len(before) or now[k] != before[k]), len(now) - 1)
+    want = 0 if first else (int(after) + 1 if after is not None else len(now) - 1)
+    if new_i != want:
+        call("move_device", track=t["ref"], device=str(new_i), position=want)
+        new_i = want
         time.sleep(0.2)
     ps = call("params", track=t["ref"], device=str(new_i))["params"]
     p = next((p for p in ps if p["name"].lower().startswith("probe id")), None)
@@ -839,7 +857,11 @@ def c_watch(a):
     if s.has("subscribe"):
         s.request({"cmd": "subscribe", "uid": i["uid"], "hz": hz})
         while time.time() < t_end:
-            ev = s.readline(timeout=2)
+            try:
+                ev = s.readline(timeout=2)
+            except OSError:
+                print("(no data for 2 s)")
+                continue
             if ev.get("event") == "snapshot" and ev.get("uid") == i["uid"]:
                 print(json.dumps(ev["snapshot"]) if JSON else _fmt_meas(ev["snapshot"]))
                 sys.stdout.flush()
@@ -1022,6 +1044,10 @@ def main(argv=None):
             print(json.dumps({"ok": False, "error": str(e)}))
         else:
             print("live: %s" % e, file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        msg = "connection problem: %s" % e
+        print(json.dumps({"ok": False, "error": msg}) if JSON else "live: " + msg, file=sys.stdout if JSON else sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

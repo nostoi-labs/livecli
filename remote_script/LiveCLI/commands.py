@@ -107,9 +107,9 @@ def _name(obj, attr):
         return None
 
 
-def _color(c):
+def _color(obj):
     try:
-        return "#%06X" % (int(c) & 0xFFFFFF)
+        return "#%06X" % (int(obj.color) & 0xFFFFFF)
     except Exception:
         return None
 
@@ -185,7 +185,7 @@ def _param_info(i, p):
 
 
 def _clip_info(c):
-    e = {"name": c.name, "color": _color(c.color), "length": c.length, "looping": c.looping,
+    e = {"name": c.name, "color": _color(c), "length": c.length, "looping": c.looping,
          "loop_start": c.loop_start, "loop_end": c.loop_end, "midi": c.is_midi_clip,
          "playing": c.is_playing, "triggered": c.is_triggered, "muted": c.muted}
     if c.is_audio_clip:
@@ -240,10 +240,6 @@ def c_song(cs, req):
             out[k] = getattr(s, k)
         except Exception:
             pass
-    try:
-        out["file"] = s.name if hasattr(s, "name") else None
-    except Exception:
-        pass
     return out
 
 
@@ -277,7 +273,7 @@ def c_tracks(cs, req):
     out = []
     for ref, t in _tracks(cs):
         md = t.mixer_device
-        e = {"ref": ref, "name": t.name, "color": _color(t.color), "volume": str(md.volume),
+        e = {"ref": ref, "name": t.name, "color": _color(t), "volume": str(md.volume),
              "pan": str(md.panning),
              "devices": [_dev_info(d, str(j)) for j, d in enumerate(t.devices)]}
         if ref != "m":
@@ -338,7 +334,7 @@ def c_locators(cs, req):
 
 
 def c_scenes(cs, req):
-    return [{"i": i, "name": sc.name, "color": _color(sc.color),
+    return [{"i": i, "name": sc.name, "color": _color(sc),
              "tempo": sc.tempo if getattr(sc, "tempo_enabled", sc.tempo > 0) else None,
              "triggered": sc.is_triggered}
             for i, sc in enumerate(_song(cs).scenes)]
@@ -378,7 +374,7 @@ def c_notes(cs, req):
     _, _, c = _clip(cs, req)
     if not c.is_midi_clip:
         raise ValueError("not a MIDI clip")
-    notes = c.get_notes_extended(0, 128, -16384.0, 1e9)
+    notes = c.get_notes_extended(0, 128, 0.0, 1e6)
     return [{"pitch": n.pitch, "start": n.start_time, "duration": n.duration, "velocity": n.velocity,
              "mute": n.mute, "probability": n.probability} for n in notes]
 
@@ -498,15 +494,26 @@ def c_locator_set(cs, req, box):
     was_playing, pos = s.is_playing, s.current_song_time
     s.stop_playing()
 
+    def guard(fn):
+        def g():
+            try:
+                fn()
+            except Exception as e:
+                box.put({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
+        return g
+
+    @guard
     def step1():
         s.current_song_time = t
-        cs.schedule(2, step2)
+        cs.livecli_after(2, step2)
 
+    @guard
     def step2():
         if not any(abs(c.time - t) < 0.01 for c in s.cue_points):
             s.set_or_delete_cue()
-        cs.schedule(1, step3)
+        cs.livecli_after(1, step3)
 
+    @guard
     def step3():
         cp = next((c for c in s.cue_points if abs(c.time - t) < 0.01), None)
         if cp is not None and req.get("name") is not None:
@@ -517,7 +524,7 @@ def c_locator_set(cs, req, box):
         box.put({"ok": cp is not None, "result": c_locators(cs, req),
                  "error": None if cp is not None else "Live did not create the locator"})
 
-    cs.schedule(2, step1)
+    cs.livecli_after(2, step1)
     return DEFERRED
 
 
@@ -601,7 +608,7 @@ def c_track_set(cs, req):
     if "fold" in req and t.is_foldable:
         t.fold_state = bool(req["fold"])
     return {"track": t.name, "mute": getattr(t, "mute", None), "solo": getattr(t, "solo", None),
-            "arm": t.arm if getattr(t, "can_be_armed", False) else None, "color": _color(t.color)}
+            "arm": t.arm if getattr(t, "can_be_armed", False) else None, "color": _color(t)}
 
 
 def c_set_mixer(cs, req):
@@ -805,7 +812,7 @@ def c_set_notes(cs, req):
     if not c.is_midi_clip:
         raise ValueError("not a MIDI clip")
     if not req.get("add"):
-        c.remove_notes_extended(0, 128, -16384.0, 1e9)
+        c.remove_notes_extended(0, 128, 0.0, 1e6)
     specs = []
     for n in req.get("notes", []):
         specs.append(Live.Clip.MidiNoteSpecification(
@@ -813,7 +820,7 @@ def c_set_notes(cs, req):
             velocity=float(n.get("velocity", 100)), mute=bool(n.get("mute", False))))
     if specs:
         c.add_new_notes(tuple(specs))
-    return {"notes": len(c.get_notes_extended(0, 128, -16384.0, 1e9))}
+    return {"notes": len(c.get_notes_extended(0, 128, 0.0, 1e6))}
 
 
 # ------------------------------------------------------------------ audio capture (optional)
@@ -824,9 +831,12 @@ def c_capture(cs, req):
     Returns immediately; the file is complete after `seconds`."""
     import subprocess
     import threading
+    path = os.path.expanduser("~/.config/live-cli/config.json")
     cfg = _config().get("capture", {})
     if not cfg.get("enabled"):
-        raise ValueError("capture is disabled (see README: capture)")
+        if os.path.exists(path) and not os.access(path, os.R_OK):
+            raise ValueError("Live cannot read %s (permissions)" % path)
+        raise ValueError("capture is disabled in %s (see README: capture)" % path)
     dev = req.get("device") or cfg.get("device")
     if not dev:
         raise ValueError("no capture device configured")

@@ -308,7 +308,7 @@ def install():
     here = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, os.path.join(here, "..", "remote_script", "LiveCLI"))
     import commands
-    cs = types.SimpleNamespace(_song=song, schedule=lambda ticks, fn: fn())
+    cs = types.SimpleNamespace(_song=song, livecli_after=lambda ticks, fn: fn())
     return commands, cs
 
 

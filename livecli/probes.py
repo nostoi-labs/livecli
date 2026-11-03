@@ -11,6 +11,7 @@ from .client import LiveError
 
 PROTOCOL_MAJOR = "0"
 SOCKET_DIR = os.path.expanduser(os.environ.get("LIVEPROBES_DIR", "~/Library/Application Support/LiveProbes"))
+FALLBACK_DIR = "/tmp/LiveProbes-%d" % os.getuid()   # used by servers when SOCKET_DIR makes the path too long
 CENTERS = [20.0 * 2 ** (k / 3.0) for k in range(31)]
 ZONES = [("sub", 20, 60), ("bass", 60, 120), ("low-mid", 120, 300), ("mid", 300, 1000),
          ("upper-mid", 1000, 4000), ("presence", 4000, 8000), ("air", 8000, 20500)]
@@ -76,7 +77,8 @@ class Server:
 def servers():
     """Connect to every live probe server. Unreachable sockets are skipped."""
     out = []
-    for p in sorted(glob.glob(os.path.join(SOCKET_DIR, "*.sock"))):
+    dirs = [SOCKET_DIR] if os.environ.get("LIVEPROBES_DIR") else [SOCKET_DIR, FALLBACK_DIR]
+    for p in sorted(sum((glob.glob(os.path.join(d, "*.sock")) for d in dirs), [])):
         try:
             out.append(Server(p).connect())
         except (OSError, LiveError, ValueError):
@@ -215,10 +217,14 @@ def compare(a, b, seconds=10.0, transfer=False, live=False):
     otherwise history (same seconds), otherwise live polling for `seconds`."""
     (sa, ia), (sb, ib) = a, b
     if not live and sa.path == sb.path and sa.has("compare"):
-        r = sa.request({"cmd": "compare", "a": ia["uid"], "b": ib["uid"], "seconds": seconds,
-                        "transfer": bool(transfer)}, timeout=seconds + 10)
-        r["method"] = "server"
-        return r
+        try:
+            r = sa.request({"cmd": "compare", "a": ia["uid"], "b": ib["uid"], "seconds": seconds,
+                            "transfer": bool(transfer)}, timeout=seconds + 10)
+            if any(x is not None for x in r.get("gain_db", [])):
+                r["method"] = "server"
+                return r
+        except LiveError:
+            pass        # e.g. no common seconds yet: measure here instead
     meas, n = None, 0
     if not live and sa.has("history") and sb.has("history"):
         h = from_history([a, b], int(math.ceil(seconds)))
