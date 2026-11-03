@@ -9,6 +9,9 @@
 //   kind:   sine:<hz>:<dBFS> | sinel:<hz>:<dBFS> (left only) | noise:<dBFS> | anti:<dBFS> | silence
 //           | eqnoise:<dBFS>:<hz>:<gain dB> (the same noise as `noise`, through an RBJ peaking EQ, Q 1)
 //           | dnoise:<dBFS>:<ms> (the same noise as `noise`, delayed by <ms>; negative <ms>: also inverted)
+//           | clicks:<dBFS>:<ms> (a click on every 1/16 of the host tempo, <ms> late: 2 kHz cosine burst, 5 ms decay)
+//   environment: PROBE_HOST_TEMPO (bpm, default 120), PROBE_HOST_TRANSPORT = playing (default) | stopped |
+//                nomusic (no song position) | loop (cycle over the first 4 quarter notes, wrapping inside blocks)
 //   @inplace: input and output share the same buffers (as some hosts do)
 //   @mono:    mono bus arrangement (1 channel)
 //   @p<N>:    instance of the N-th bundle when <plugin.vst3> is a comma-separated list
@@ -45,6 +48,8 @@ struct Signal {
     double phase = 0;
     std::mt19937 rng{1234};
     std::vector<float> dl, dr;  // dnoise delay lines
+    long clickPos = 0;
+    double tempo = 120;
     size_t dpos = 0;
     // peaking EQ state (direct form I, per channel)
     double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, xs[2][2] = {}, ys[2][2] = {};
@@ -81,6 +86,14 @@ struct Signal {
                 float sgn = hz < 0 ? -1.f : 1.f;
                 x = sgn * dl[rd]; y = sgn * dr[rd];
                 dpos = rd;
+            } else if (kind == "clicks") {
+                // sample index n since the start; 1/16 grid of `tempo`, clicks `hz` ms late
+                const double grid = sr * 60.0 / tempo / 4.0;
+                const double n = (double)clickPos++ - hz * sr / 1000.0;
+                if (n >= 0) {
+                    const double k = std::floor(n / grid), dt = (n - k * grid) / sr;  // seconds since the click
+                    if (dt < 0.03) x = y = (float)(a * std::cos(2 * M_PI * 2000 * dt) * std::exp(-dt / 0.005));
+                }
             } else if (kind == "anti") {
                 x = (float)(a * g(rng));
                 y = -x;
@@ -110,6 +123,7 @@ static Signal parseSignal(std::string s) {
     g.kind = p[0];
     if ((g.kind == "sine" || g.kind == "sinel") && p.size() >= 3) { g.hz = atof(p[1].c_str()); g.db = atof(p[2].c_str()); }
     else if ((g.kind == "noise" || g.kind == "anti") && p.size() >= 2) g.db = atof(p[1].c_str());
+    else if (g.kind == "clicks" && p.size() >= 3) { g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); }
     else if (g.kind == "dnoise" && p.size() >= 3) { g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); }
     else if (g.kind == "eqnoise" && p.size() >= 4) {
         g.db = atof(p[1].c_str()); g.hz = atof(p[2].c_str()); g.gain = atof(p[3].c_str());
@@ -242,13 +256,28 @@ int main(int argc, char** argv) {
     printf("running %.0f s with %zu instances\n", seconds, insts.size());
     fflush(stdout);
 
+    const char* tempoEnv = getenv("PROBE_HOST_TEMPO");
+    const double tempo = tempoEnv ? atof(tempoEnv) : 120.0;
+    const std::string mode = getenv("PROBE_HOST_TRANSPORT") ? getenv("PROBE_HOST_TRANSPORT") : "playing";
+    for (auto& in : insts) in->sig.tempo = tempo;
     ProcessContext ctx{};
     ctx.sampleRate = sr;
-    ctx.state = ProcessContext::kPlaying;
+    ctx.tempo = tempo;
+    ctx.state = ProcessContext::kTempoValid;
+    if (mode != "stopped") ctx.state |= ProcessContext::kPlaying;
+    if (mode != "nomusic") ctx.state |= ProcessContext::kProjectTimeMusicValid;
+    if (mode == "loop") {
+        ctx.state |= ProcessContext::kCycleActive | ProcessContext::kCycleValid;
+        ctx.cycleStartMusic = 0;
+        ctx.cycleEndMusic = 4;
+    }
+    printf("transport %s, %.1f bpm\n", mode.c_str(), tempo);
     auto t0 = std::chrono::steady_clock::now();
     const long blocks = (long)(seconds * sr / block);
     for (long b = 0; b < blocks; b++) {
         ctx.projectTimeSamples = b * block;
+        ctx.projectTimeMusic = b * block / sr * tempo / 60.0;
+        if (mode == "loop") ctx.projectTimeMusic = std::fmod(ctx.projectTimeMusic, 4.0);
         for (auto& in : insts) {
             const bool st = in->channels == 2;
             in->sig.fill(in->inL.data(), st ? in->inR.data() : nullptr, block, sr);
@@ -271,7 +300,9 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_until(t0 + std::chrono::duration<double>((b + 1) * block / sr));
     }
     long bad = 0;
-    for (auto& in : insts) {
+    for (size_t k = 0; k < insts.size(); k++) {
+        auto& in = insts[k];
+        if (in->mismatches) printf("instance %zu (%s): %ld blocks differ from the input\n", k + 1, in->sig.name.c_str(), in->mismatches);
         bad += in->mismatches;
         in->proc->setProcessing(false);
         in->comp->setActive(false);

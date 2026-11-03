@@ -173,9 +173,63 @@ bool runDelay(const PendingDelay& p, double now, std::string& out) {
     return true;
 }
 
+/// Answers a pending onsets request once its window is analysed: true when `out` holds the line.
+bool runOnsets(const PendingOnsets& p, double now, std::string& out) {
+    auto inst = Hub::get().findUid(p.uid);
+    JWriter w;
+    w.beginObject();
+    auto head = [&](bool ok) {
+        w.key("ok").boolean(ok);
+        if (!p.ridJson.empty()) w.key("rid").raw(p.ridJson);
+    };
+    auto err = [&](const char* code, const std::string& msg) {
+        head(false);
+        w.key("error").str(msg);
+        w.key("code").str(code);
+        w.endObject();
+        out = w.take();
+        return true;
+    };
+    if (!inst) return err("not_found", "instance removed while collecting");
+    Instance::OnsetWindow win = inst->onsetsBetween(p.t0, p.t1, p.thresholdDb);
+    if (!win.covered && now < p.deadline) return false;  // the analysis has not reached the end yet
+    if (!win.played) return err("busy", "transport not playing (or no song position from the host)");
+    if (win.onsets.empty()) return err("busy", "no onsets above the threshold");
+    head(true);
+    w.key("uid").str(p.uid);
+    w.key("sample_rate").number(win.sampleRate, 1);
+    w.key("seconds").number(p.t1 - p.t0, 2);
+    w.key("threshold_db").number(p.thresholdDb, 1);
+    w.key("onsets").beginArray();
+    for (const Onset& o : win.onsets) {
+        w.beginObject();
+        w.key("t").number(o.t, 4);
+        w.key("ppq").number(o.ppq, 6);
+        w.key("tempo").number(o.tempo, 3);
+        w.key("level_db").number(o.levelDb, 1);
+        w.endObject();
+    }
+    w.endArray();
+    w.endObject();
+    out = w.take();
+    return true;
+}
+
 }  // namespace
 
 void Protocol::duePending(Session& s, double now, std::string& out) {
+    for (size_t i = 0; i < s.pendingOnsets.size();) {
+        PendingOnsets& p = s.pendingOnsets[i];
+        std::string line;
+        if (now >= p.due && runOnsets(p, now, line)) {
+            out += line;
+            out += '\n';
+            s.pendingOnsets.erase(s.pendingOnsets.begin() + (long)i);
+            continue;
+        }
+        if (now >= p.due) p.due = now + 0.1;
+        i++;
+    }
     for (size_t i = 0; i < s.pending.size();) {
         PendingDelay& p = s.pending[i];
         std::string line;
@@ -313,6 +367,64 @@ std::string Protocol::handle(const std::string& line, Session& s, double now) {
         s.pending.push_back(p);
         return std::string();
     }
+    if (cmd == "pulse") {
+        if (!hasCap("pulse")) return error(rid, "unsupported", "pulse is not supported");
+        auto inst = resolve(req, rid, err);
+        if (!inst) return err;
+        if (flag(req, "stop")) {
+            inst->stopPulse();
+            Reply r(rid);
+            r.w.key("uid").str(inst->uid);
+            r.w.key("stopped").boolean(true);
+            return r.done();
+        }
+        Instance::PulseRequest p;
+        p.every = numberOr(req, "every", 1.0, 1.0 / 32, 64);
+        p.offset = numberOr(req, "offset", 0.0, -64, 64);
+        p.seconds = numberOr(req, "seconds", 4, 0.5, 10);
+        p.levelDb = std::min(numberOr(req, "level_db", -20, -120, 0), Instance::kPulseMaxDb);
+        std::string shape = "impulse", mode = "add";
+        if (const JValue* v = req.get("shape")) shape = v->isString() ? v->str : "?";
+        if (const JValue* v = req.get("mode")) mode = v->isString() ? v->str : "?";
+        if (shape != "impulse" && shape != "click") return error(rid, "bad_request", "shape: impulse or click");
+        if (mode != "add" && mode != "replace") return error(rid, "bad_request", "mode: add or replace");
+        p.click = shape == "click";
+        p.replace = mode == "replace";
+        if (now - inst->lastAudioT() > 1.0) return error(rid, "busy", "no audio processed in the last second");
+        const uint32_t f = inst->lastTransportFlags();
+        if (!(f & Transport::kMusicValid) || !(f & Transport::kTempoValid))
+            return error(rid, "bad_request", "the host gives no song position or tempo: no pulses");
+        p.untilT = now + p.seconds;
+        inst->startPulse(p);
+        Reply r(rid);
+        r.w.key("uid").str(inst->uid);
+        r.w.key("until_t").number(p.untilT, 3);
+        r.w.key("level_db").number(p.levelDb, 1);
+        r.w.key("every").number(p.every, 6);
+        r.w.key("offset").number(p.offset, 6);
+        r.w.key("seconds").number(p.seconds, 2);
+        r.w.key("shape").str(shape);
+        r.w.key("mode").str(mode);
+        r.w.key("playing").boolean((f & Transport::kPlaying) != 0);
+        return r.done();
+    }
+    if (cmd == "onsets") {
+        if (!hasCap("onsets")) return error(rid, "unsupported", "onsets is not supported");
+        auto inst = resolve(req, rid, err);
+        if (!inst) return err;
+        PendingOnsets p;
+        p.ridJson = jsonOf(rid);
+        p.uid = inst->uid;
+        const double sec = numberOr(req, "seconds", 8, 0.5, 30);
+        p.thresholdDb = numberOr(req, "threshold_db", -50, -100, 0);
+        p.t0 = now;
+        p.t1 = now + sec;
+        p.due = p.t1 + 0.1;
+        p.deadline = p.t1 + 1.5;  // the analysis runs ~30 Hz behind the audio
+        inst->armOnsets(p.t1, p.thresholdDb);
+        s.pendingOnsets.push_back(p);
+        return std::string();
+    }
     if (cmd == "subscribe") {
         Subscription sub;
         sub.hz = numberOr(req, "hz", 10, 1, 30);
@@ -408,6 +520,10 @@ void Protocol::dueEvents(Session& s, double now, std::string& out) {
 int Protocol::msUntilDue(const Session& s, double now, int cap) {
     int best = cap;
     for (auto& p : s.pending) {
+        int ms = (int)std::ceil((p.due - now) * 1000.0);
+        if (ms < best) best = ms < 0 ? 0 : ms;
+    }
+    for (auto& p : s.pendingOnsets) {
         int ms = (int)std::ceil((p.due - now) * 1000.0);
         if (ms < best) best = ms < 0 ? 0 : ms;
     }

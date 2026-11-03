@@ -11,6 +11,7 @@
 
 #include "engine.h"
 #include "json.h"
+#include "onsets.h"
 #include "ring.h"
 
 namespace liveprobe {
@@ -52,7 +53,9 @@ public:
 
     // ---- audio thread ----
     /// Only memcpy's into the ring. `r` null for mono. `t` < 0: now (tests pass their own clock).
-    void pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos, double t = -1);
+    /// `tr`: host transport at the first frame (null: unknown).
+    void pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos, double t = -1,
+                   const Transport* tr = nullptr);
 
     // ---- analysis thread ----
     /// Drains the ring and runs the analysis. Returns frames processed.
@@ -89,6 +92,38 @@ public:
     bool copyCapture(CaptureCopy& out);
     /// Capacity of the capture in seconds at the current rate (0 when unknown).
     double captureCapacityS() const;
+
+    // ---- pulse (§5.11): test impulses on the grid, the only time a probe alters its output ----
+    struct PulseRequest {
+        double every = 1.0, offset = 0.0;  // quarter notes
+        double levelDb = -20;               // capped at kPulseMaxDb
+        bool click = false;                 // 1 ms raised-cosine burst instead of one sample
+        bool replace = false;               // mute the input while pulsing
+        double seconds = 4;                 // capped at 10
+        double untilT = 0;                  // server clock
+    };
+    static constexpr double kPulseMaxDb = -6.0;
+    /// Server/main thread: start, or stop (also from setActive(false) / terminate). Lock-free for the audio thread.
+    void startPulse(const PulseRequest& r);
+    void stopPulse();
+    /// Audio thread, after the input was copied to the output: adds the impulses that fall in this block.
+    /// Returns true while the output differs from the input. No locks, no allocation.
+    bool renderPulse(float* const* out, int channels, int frames, const Transport& tr, double sampleRate, double t);
+    bool pulsing() const { return pulsing_.load(std::memory_order_relaxed); }
+    /// Transport flags of the last block (audio thread writes), and when it arrived.
+    uint32_t lastTransportFlags() const { return lastFlags_.load(std::memory_order_relaxed); }
+    double lastAudioT() const { return lastAudioT_.load(std::memory_order_relaxed); }
+
+    // ---- onsets (only while a client asks) ----
+    /// Server thread: detect onsets until `until` (server clock), at least down to `thresholdDb`.
+    void armOnsets(double until, double thresholdDb);
+    struct OnsetWindow {
+        std::vector<Onset> onsets;    // t in [t0, t1), level >= threshold
+        bool played = false;          // some audio of the window came with the transport playing
+        bool covered = false;         // the analysis has reached t1
+        double sampleRate = 0;
+    };
+    OnsetWindow onsetsBetween(double t0, double t1, double thresholdDb);
 
 private:
     struct Tick {
@@ -128,6 +163,19 @@ private:
     // audio
     AudioRing ring_;
     std::atomic<double> lastAudioT_{-1};
+    std::atomic<uint32_t> lastFlags_{0};
+
+    // pulse: command handed over with a seqlock (writers serialised by pulseWriteM_), state owned by the audio thread
+    std::mutex pulseWriteM_;
+    std::atomic<uint32_t> pulseSeq_{0};
+    std::atomic<bool> cmdStop_{true}, cmdClick_{false}, cmdReplace_{false};
+    std::atomic<double> cmdEvery_{1}, cmdOffset_{0}, cmdLevel_{0.1}, cmdSeconds_{4}, cmdUntil_{0};
+    std::atomic<bool> pulsing_{false};
+    uint32_t pulseSeen_ = 0;
+    bool pActive_ = false, pPlayed_ = false, pClick_ = false, pReplace_ = false;
+    double pEvery_ = 1, pOffset_ = 0, pLevel_ = 0.1, pUntil_ = 0;
+    long long pRemaining_ = 0;
+    int pBurstLeft_ = 0, pBurstLen_ = 0;
 
     // analysis (guarded by m_)
     mutable std::mutex m_;
@@ -157,6 +205,13 @@ private:
     uint64_t capWritten_ = 0, capRunStart_ = 0, capDropped_ = 0;
     size_t capBlockHead_ = 0, capBlockCount_ = 0;
     double capUntil_ = -1, capRate_ = 0;
+
+    // onsets (guarded by m_)
+    OnsetDetector onsetDet_;
+    double onsetUntil_ = -1, onsetThrDb_ = 0;
+    std::vector<Onset> onsets_;
+    std::vector<std::pair<double, double>> playRuns_;  // [start, end) of blocks with the transport playing
+    double analyzedT_ = -1;
 };
 
 }  // namespace liveprobe

@@ -92,7 +92,8 @@ Identity Instance::identity() const {
 
 // ---------------------------------------------------------------- audio thread
 
-void Instance::pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos, double t) {
+void Instance::pushAudio(const float* l, const float* r, int frames, double sampleRate, int64_t samplePos, double t,
+                         const Transport* tr) {
     if (frames <= 0 || !l) return;
     BlockInfo bi;
     bi.frames = frames;
@@ -100,6 +101,8 @@ void Instance::pushAudio(const float* l, const float* r, int frames, double samp
     bi.t = t >= 0 ? t : monoNow();
     bi.samplePos = samplePos;
     bi.sampleRate = sampleRate;
+    if (tr) bi.transport = *tr;
+    lastFlags_.store(bi.transport.flags, std::memory_order_relaxed);
     ring_.write(l, r, frames, bi);
     lastAudioT_.store(bi.t, std::memory_order_relaxed);
 }
@@ -125,6 +128,25 @@ int Instance::analyze() {
         if (bi.sampleRate != sr_ && bi.sampleRate > 0) prepare(bi.sampleRate);
         if (bi.channels != engineChannels_) engine_->setChannels(engineChannels_ = bi.channels);
         if (capUntil_ > 0) capture(bufL_.data(), bufR_.data(), bi);
+        if (onsetUntil_ > 0) {
+            if (bi.t > onsetUntil_ + 5.0) {  // nobody is waiting: stop and free
+                onsetUntil_ = -1;
+                std::vector<Onset>().swap(onsets_);
+                playRuns_.clear();
+            } else {
+                onsetDet_.process(bufL_.data(), bufR_.data(), bi.frames, bi, onsets_);
+                if (onsets_.size() > 8192) onsets_.erase(onsets_.begin(), onsets_.begin() + 4096);
+                const uint32_t need = Transport::kPlaying | Transport::kMusicValid | Transport::kTempoValid;
+                if ((bi.transport.flags & need) == need) {
+                    const double end = bi.t + bi.frames / bi.sampleRate;
+                    // consecutive blocks join one run (allow the timestamp jitter of the audio callback)
+                    if (!playRuns_.empty() && bi.t - playRuns_.back().second < 0.05) playRuns_.back().second = end;
+                    else playRuns_.push_back({bi.t, end});
+                    if (playRuns_.size() > 256) playRuns_.erase(playRuns_.begin());
+                }
+            }
+        }
+        analyzedT_ = bi.t + bi.frames / bi.sampleRate;
         int off = 0;
         while (off < bi.frames) {
             int n = std::min(bi.frames - off, tickLen_ - cur_.n);
@@ -288,6 +310,7 @@ void Instance::writeIdentity(JWriter& w, double now) {
     w.key("active").boolean(active);
     w.key("signal").boolean(signal);
     w.key("dropped_blocks").integer((long long)ring_.dropped());
+    w.key("pulsing").boolean(pulsing());
     w.endObject();
 }
 
@@ -513,6 +536,133 @@ bool Instance::copyCapture(CaptureCopy& out) {
     out.first = first;
     out.sampleRate = capRate_;
     return true;
+}
+
+// ---------------------------------------------------------------- pulse
+
+void Instance::startPulse(const PulseRequest& r) {
+    std::lock_guard<std::mutex> lk(pulseWriteM_);
+    pulseSeq_.fetch_add(1, std::memory_order_acq_rel);  // odd: being written
+    cmdStop_.store(false, std::memory_order_relaxed);
+    cmdEvery_.store(r.every, std::memory_order_relaxed);
+    cmdOffset_.store(r.offset, std::memory_order_relaxed);
+    cmdLevel_.store(std::pow(10.0, std::min(r.levelDb, kPulseMaxDb) / 20.0), std::memory_order_relaxed);
+    cmdClick_.store(r.click, std::memory_order_relaxed);
+    cmdReplace_.store(r.replace, std::memory_order_relaxed);
+    cmdSeconds_.store(std::max(0.0, std::min(10.0, r.seconds)), std::memory_order_relaxed);
+    cmdUntil_.store(r.untilT, std::memory_order_relaxed);
+    pulseSeq_.fetch_add(1, std::memory_order_release);  // even: complete
+}
+
+void Instance::stopPulse() {
+    std::lock_guard<std::mutex> lk(pulseWriteM_);
+    pulseSeq_.fetch_add(1, std::memory_order_acq_rel);
+    cmdStop_.store(true, std::memory_order_relaxed);
+    pulseSeq_.fetch_add(1, std::memory_order_release);
+}
+
+bool Instance::renderPulse(float* const* out, int channels, int n, const Transport& tr, double sr, double t) {
+    // pick up a new command (seqlock: retry on the next block if it is being written)
+    const uint32_t s1 = pulseSeq_.load(std::memory_order_acquire);
+    if (s1 != pulseSeen_ && (s1 & 1u) == 0) {
+        const bool stop = cmdStop_.load(std::memory_order_relaxed);
+        const double every = cmdEvery_.load(std::memory_order_relaxed), offset = cmdOffset_.load(std::memory_order_relaxed);
+        const double level = cmdLevel_.load(std::memory_order_relaxed), seconds = cmdSeconds_.load(std::memory_order_relaxed);
+        const double until = cmdUntil_.load(std::memory_order_relaxed);
+        const bool click = cmdClick_.load(std::memory_order_relaxed), replace = cmdReplace_.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (pulseSeq_.load(std::memory_order_relaxed) == s1) {
+            pulseSeen_ = s1;
+            pActive_ = !stop;
+            pEvery_ = every; pOffset_ = offset; pLevel_ = std::min(level, 0.5011872336272722);  // -6 dBFS, whatever arrived
+            pClick_ = click; pReplace_ = replace; pUntil_ = until;
+            pRemaining_ = (long long)(seconds * sr);
+            pPlayed_ = false;
+            pBurstLeft_ = 0;
+            pBurstLen_ = std::max(2, (int)std::lround(0.001 * sr));
+        }
+    }
+    if (!pActive_) {
+        pulsing_.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    const uint32_t need = Transport::kPlaying | Transport::kMusicValid | Transport::kTempoValid;
+    const bool playing = (tr.flags & need) == need && tr.tempo > 0 && sr > 0;
+    // ends: duration, wall clock (also covers a device switched off: no process() calls), transport stopped
+    if (pRemaining_ <= 0 || t > pUntil_ || (pPlayed_ && !playing)) {
+        pActive_ = false;
+        pulsing_.store(false, std::memory_order_relaxed);
+        return false;
+    }
+    const long long left = pRemaining_;  // samples of the duration still to go, from this block's start
+    pRemaining_ -= n;
+    if (!playing) return false;  // waits for the transport (until the deadline)
+    pPlayed_ = true;
+    pulsing_.store(true, std::memory_order_relaxed);
+    if (pReplace_)
+        for (int c = 0; c < channels; c++) if (out[c]) std::fill(out[c], out[c] + n, 0.f);
+
+    auto burstAt = [&](int s, int j) {  // sample j of the burst at block sample s
+        const float v = pClick_ ? (float)(pLevel_ * 0.5 * (1.0 - std::cos(2.0 * M_PI * (j + 1) / (pBurstLen_ + 1)))) : (float)pLevel_;
+        for (int c = 0; c < channels; c++) if (out[c]) out[c][s] += v;
+    };
+    // the rest of a click that started in the previous block
+    int carried = 0;
+    for (; carried < pBurstLeft_ && carried < n && carried < left; carried++) burstAt(carried, pBurstLen_ - pBurstLeft_ + carried);
+    pBurstLeft_ -= carried;
+
+    const double q = sr * 60.0 / tr.tempo;  // samples per quarter note
+    auto place = [&](double p0, int from, int to) {  // song position p0 at block sample `from`
+        double k = std::ceil((p0 - 0.5 / q - pOffset_) / pEvery_ - 1e-9);
+        for (int guard = 0; guard < 4096; guard++, k += 1) {
+            const double pos = k * pEvery_ + pOffset_;
+            const long s = from + std::lround((pos - p0) * q);
+            if (s >= to || s >= left) break;  // the duration ends to the sample
+            if (s < from) continue;
+            if (!pClick_) {
+                burstAt((int)s, 0);
+            } else {
+                int j = 0;
+                for (; j < pBurstLen_ && s + j < n; j++) burstAt((int)(s + j), j);
+                pBurstLeft_ = pBurstLen_ - j;
+            }
+        }
+    };
+    const double endPpq = tr.ppq + n / q;
+    if ((tr.flags & Transport::kCycleActive) && tr.cycleEnd > tr.cycleStart && tr.ppq < tr.cycleEnd && endPpq > tr.cycleEnd) {
+        const int wrap = (int)std::min<long>(n, std::lround((tr.cycleEnd - tr.ppq) * q));
+        place(tr.ppq, 0, wrap);
+        place(tr.cycleStart, wrap, n);
+    } else {
+        place(tr.ppq, 0, n);
+    }
+    return true;
+}
+
+void Instance::armOnsets(double until, double thresholdDb) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (onsetUntil_ < 0) {
+        if (sr_ > 0) onsetDet_.prepare(sr_);  // fresh state: no stale look-back samples
+        onsetThrDb_ = thresholdDb;
+        onsets_.clear();
+        playRuns_.clear();
+    } else {
+        onsetThrDb_ = std::min(onsetThrDb_, thresholdDb);
+    }
+    onsetDet_.setThresholdDb(onsetThrDb_);
+    onsetUntil_ = std::max(onsetUntil_, until);
+}
+
+Instance::OnsetWindow Instance::onsetsBetween(double t0, double t1, double thresholdDb) {
+    std::lock_guard<std::mutex> lk(m_);
+    OnsetWindow w;
+    w.sampleRate = sr_;
+    w.covered = analyzedT_ >= t1;
+    for (const Onset& o : onsets_)
+        if (o.t >= t0 && o.t < t1 && o.levelDb >= thresholdDb) w.onsets.push_back(o);
+    for (const auto& run : playRuns_)
+        if (run.first < t1 && run.second > t0) w.played = true;
+    return w;
 }
 
 double Instance::captureCapacityS() const {

@@ -222,6 +222,305 @@ static void testDelay() {
     CHECK(v.get("ok") && !v.get("ok")->b && v.get("code")->str == "bad_request");
 }
 
+// ---- onsets: clicks on the 1/16 grid of the host's song position, a known time late
+struct OnsetCase {
+    double lateMs = 10;      // clicks this late versus the grid (negative: early)
+    double tempo = 120, tempo2 = 0;  // tempo2: tempo after the first half
+    bool stopped = false, noMusic = false, loop = false;
+    double clickDb = -6, thresholdDb = -50;
+    double seconds = 4;
+    int block = 512;
+};
+
+/// Offsets from the 1/16 grid in ms, the way `live sync` computes them.
+static std::vector<double> gridOffsetsMs(const JValue& r) {
+    std::vector<double> out;
+    const JValue* list = r.get("onsets");
+    if (!list) return out;
+    for (auto& o : list->arr) {
+        double ppq = num(o.get("ppq")), tempo = num(o.get("tempo"));
+        double off = ppq - std::round(ppq / 0.25) * 0.25;
+        out.push_back(off * 60.0 / tempo * 1000.0);
+    }
+    return out;
+}
+
+static JValue runOnsetCase(const OnsetCase& oc, double tBase) {
+    Hub& hub = Hub::get();
+    auto a = hub.add();
+    a->setFormat(2, 48000);
+    Session s;
+    const double sr = 48000;
+    char req[256];
+    snprintf(req, sizeof req, R"({"cmd":"onsets","rid":"o","uid":"%s","seconds":%g,"threshold_db":%g})", a->uid.c_str(),
+             oc.seconds, oc.thresholdDb);
+    CHECK(Protocol::handle(req, s, tBase).empty() && s.pendingOnsets.size() == 1);
+    const double amp = std::pow(10.0, oc.clickDb / 20.0);
+    std::vector<float> l(oc.block), r(oc.block);
+    double ppq = 1.0;              // song position (unwrapped), starts on beat 2
+    long nextClick = -1;           // sample index of the next click
+    double clickStart = -1;
+    const long total = (long)((oc.seconds + 0.6) * sr);
+    for (long done = 0; done < total; done += oc.block) {
+        const double tempo = (oc.tempo2 > 0 && done > total / 2) ? oc.tempo2 : oc.tempo;
+        Transport tr;
+        tr.tempo = tempo;
+        tr.flags = Transport::kTempoValid | (oc.stopped ? 0 : Transport::kPlaying) | (oc.noMusic ? 0 : Transport::kMusicValid);
+        tr.ppq = oc.loop ? std::fmod(ppq, 2.0) : ppq;
+        if (oc.loop) { tr.flags |= Transport::kCycleActive; tr.cycleStart = 0; tr.cycleEnd = 2; }
+        for (int i = 0; i < oc.block; i++) {
+            const long n = done + i;
+            const double p0 = ppq + i / sr * tempo / 60.0, p1 = p0 + tempo / 60.0 / sr;
+            // a 1/16 boundary inside this sample → click `lateMs` later
+            if (std::floor(p1 / 0.25) > std::floor(p0 / 0.25) || (n == 0 && std::fmod(p0, 0.25) == 0)) {
+                const double frac = (std::floor(p1 / 0.25) * 0.25 - p0) / (p1 - p0);  // boundary position in the sample
+                // early clicks belong to the next boundary: schedule them one 1/16 ahead
+                const double ahead = oc.lateMs < 0 ? 0.25 * 60.0 / tempo * sr : 0.0;
+                nextClick = n + (long)std::lround(frac + ahead + oc.lateMs * sr / 1000.0);
+            }
+            if (n == nextClick) clickStart = (double)n;
+            float x = 0;
+            if (clickStart >= 0) {
+                const double dt = (n - clickStart) / sr;
+                if (dt < 0.03) x = (float)(amp * std::cos(2 * M_PI * 2000 * dt) * std::exp(-dt / 0.005));
+            }
+            l[i] = r[i] = x;
+        }
+        ppq += oc.block / sr * tempo / 60.0;
+        a->pushAudio(l.data(), r.data(), oc.block, sr, done, tBase + 0.01 + done / sr, &tr);
+        if ((done / oc.block) % 16 == 0) a->analyze();
+    }
+    a->analyze();
+    std::string out;
+    Protocol::duePending(s, tBase + oc.seconds + 0.2, out);
+    JValue v = parse(out.empty() ? "{}" : out.substr(0, out.find('\n')));
+    hub.remove(a);
+    return v;
+}
+
+static void summarize(const char* what, const JValue& v, double expectMs, size_t expectN) {
+    std::vector<double> off = gridOffsetsMs(v);
+    double lo = 1e9, hi = -1e9, sum = 0;
+    for (double x : off) { lo = std::min(lo, x); hi = std::max(hi, x); sum += x; }
+    printf("  %s: %zu onsets, offset %.3f ms (min %.3f, max %.3f), tempo %.0f\n", what, off.size(),
+           off.empty() ? NAN : sum / off.size(), lo, hi, v.get("onsets") && !v.get("onsets")->arr.empty() ? num(v.get("onsets")->arr[0].get("tempo")) : NAN);
+    CHECK(v.get("ok") && v.get("ok")->b && v.get("rid") && v.get("rid")->str == "o");
+    CHECK(off.size() + 1 >= expectN && off.size() <= expectN + 1);
+    for (double x : off) NEAR(x, expectMs, 0.05);
+}
+
+static void testOnsets() {
+    const double t0 = std::floor(monoNow()) - 1000;
+    OnsetCase c;
+    summarize("120 bpm, 10 ms late", runOnsetCase(c, t0), 10.0, 32);
+    c = OnsetCase();
+    c.lateMs = -3;
+    summarize("120 bpm, 3 ms early", runOnsetCase(c, t0 + 10), -3.0, 32);
+    c = OnsetCase();
+    c.tempo = 100;
+    c.lateMs = 5;
+    c.block = 128;
+    summarize("100 bpm, 5 ms late, 128-frame blocks", runOnsetCase(c, t0 + 20), 5.0, 27);
+    c = OnsetCase();
+    c.tempo2 = 90;
+    summarize("120 → 90 bpm, 10 ms late", runOnsetCase(c, t0 + 30), 10.0, 28);
+    c = OnsetCase();
+    c.loop = true;
+    JValue lv = runOnsetCase(c, t0 + 40);
+    summarize("loop over 2 quarters (wraps inside blocks)", lv, 10.0, 32);
+    bool inLoop = true;
+    if (lv.get("onsets")) for (auto& o : lv.get("onsets")->arr) inLoop = inLoop && num(o.get("ppq")) >= 0 && num(o.get("ppq")) < 2.0;
+    CHECK(inLoop);
+    c = OnsetCase();
+    c.clickDb = -40;
+    summarize("clicks at -40 dBFS", runOnsetCase(c, t0 + 50), 10.0, 32);
+
+    c = OnsetCase();
+    c.stopped = true;
+    JValue v = runOnsetCase(c, t0 + 60);
+    printf("  stopped: %s\n", v.get("error") ? v.get("error")->str.c_str() : "?");
+    CHECK(v.get("code") && v.get("code")->str == "busy");
+    c = OnsetCase();
+    c.noMusic = true;
+    v = runOnsetCase(c, t0 + 70);
+    CHECK(v.get("code") && v.get("code")->str == "busy");
+    c = OnsetCase();
+    c.clickDb = -60;
+    v = runOnsetCase(c, t0 + 80);
+    printf("  clicks at -60 dBFS, threshold -50: %s\n", v.get("error") ? v.get("error")->str.c_str() : "?");
+    CHECK(v.get("code") && v.get("code")->str == "busy");
+    c.thresholdDb = -70;
+    summarize("clicks at -60 dBFS, threshold -70", runOnsetCase(c, t0 + 90), 10.0, 32);
+}
+
+// ---- pulse: impulses at exact sample indices, then bit-exact pass-through again
+struct PulseRun {
+    std::vector<long> at;        // sample indices where output != input
+    std::vector<float> value;    // output - input there
+    long lastDiff = -1;
+    long bitExactAfter = 0;      // samples after the end that equal the input
+};
+
+/// Emulates the audio thread. `tempoAt(n)`/ppq follow the blocks; `transportAt(block)` can stop it.
+static PulseRun runPulse(Instance& in, int block, long total, double ppq0, double tempo, double tempo2At, double tempo2,
+                         bool loop, double t0, long stopAtBlock = -1, bool noise = false) {
+    PulseRun pr;
+    const double sr = 48000;
+    std::vector<float> inL(block), inR(block), outL(block), outR(block);
+    std::mt19937 rng(5);
+    std::normal_distribution<float> g(0.f, 0.05f);
+    double ppq = ppq0;
+    for (long done = 0, b = 0; done < total; done += block, b++) {
+        const double tp = (tempo2At >= 0 && done >= tempo2At) ? tempo2 : tempo;
+        Transport tr;
+        tr.flags = Transport::kTempoValid | Transport::kMusicValid | ((stopAtBlock >= 0 && b >= stopAtBlock) ? 0 : Transport::kPlaying);
+        tr.tempo = tp;
+        tr.ppq = loop ? std::fmod(ppq, 2.0) : ppq;
+        if (loop) { tr.flags |= Transport::kCycleActive; tr.cycleStart = 0; tr.cycleEnd = 2; }
+        for (int i = 0; i < block; i++) { inL[i] = noise ? g(rng) : 0.f; inR[i] = noise ? g(rng) : 0.f; }
+        outL = inL;
+        outR = inR;
+        float* outs[2] = {outL.data(), outR.data()};
+        in.renderPulse(outs, 2, block, tr, sr, t0 + done / sr);
+        for (int i = 0; i < block; i++) {
+            if (std::memcmp(&outL[i], &inL[i], 4) != 0 || std::memcmp(&outR[i], &inR[i], 4) != 0) {
+                pr.at.push_back(done + i);
+                pr.value.push_back(outL[i] - inL[i]);
+                pr.lastDiff = done + i;
+            }
+        }
+        if (tr.flags & Transport::kPlaying) ppq += block / sr * tp / 60.0;
+    }
+    pr.bitExactAfter = total - 1 - pr.lastDiff;
+    return pr;
+}
+
+static void testPulse() {
+    Hub& hub = Hub::get();
+    auto a = hub.add();
+    const double t0 = 5000;
+    Instance::PulseRequest rq;
+    rq.untilT = t0 + 100;
+
+    // 120 bpm: a quarter is 24000 samples. From ppq 0.3 the quarters land at 16800, 40800, 64800 (block 512)
+    rq.seconds = 2;
+    a->startPulse(rq);
+    PulseRun p = runPulse(*a, 512, 4 * 48000, 0.3, 120, -1, 0, false, t0);
+    printf("  pulse quarters from ppq 0.3, 2 s: at");
+    for (long x : p.at) printf(" %ld", x);
+    printf(", level %.4f (-20 dBFS = 0.1000), bit-exact for the last %ld samples\n", p.value.empty() ? 0.f : p.value[0], p.bitExactAfter);
+    CHECK((p.at == std::vector<long>{16800, 40800, 64800, 88800}));  // 2 s = 96000 samples: four quarters
+    NEAR(p.value.empty() ? 0 : p.value[0], 0.1, 1e-6);
+    CHECK(p.lastDiff < 96000);
+
+    // positions on block boundaries (block 480: 50 blocks per quarter), eighths
+    rq.every = 0.5;
+    rq.seconds = 1;
+    a->startPulse(rq);
+    p = runPulse(*a, 480, 2 * 48000, 0.0, 120, -1, 0, false, t0);
+    CHECK((p.at == std::vector<long>{0, 12000, 24000, 36000}));
+
+    // a position inside a block that straddles it: block 333, offset 0.125 (= 3000 samples)
+    rq.every = 1.0;
+    rq.offset = 0.125;
+    a->startPulse(rq);
+    p = runPulse(*a, 333, 2 * 48000, 0.0, 120, -1, 0, false, t0);
+    CHECK((p.at == std::vector<long>{3000, 27000}));
+    rq.offset = 0;
+
+    // tempo change at sample 48000 (120 → 90): quarters at 0, 24000, then 32000 samples apart
+    rq.seconds = 3;
+    a->startPulse(rq);
+    p = runPulse(*a, 500, 3 * 48000, 0.0, 120, 48000, 90, false, t0);
+    printf("  tempo 120 → 90 at 48000:");
+    for (long x : p.at) printf(" %ld", x);
+    printf("\n");
+    CHECK((p.at == std::vector<long>{0, 24000, 48000, 80000, 112000}));
+
+    // loop over 2 quarters wrapping inside a block: every 0.5 → 0, 12000, 24000, 36000, then 48000 (= ppq 0 again)
+    rq.every = 0.5;
+    rq.seconds = 1.5;
+    a->startPulse(rq);
+    p = runPulse(*a, 700, 2 * 48000, 0.0, 120, -1, 0, true, t0);
+    printf("  loop 0-2 (wrap at 48000, inside a 700-frame block):");
+    for (long x : p.at) printf(" %ld", x);
+    printf("\n");
+    CHECK((p.at == std::vector<long>{0, 12000, 24000, 36000, 48000, 60000}));
+    rq.every = 1.0;
+
+    // level cap: 0 dB asked → -6 dBFS
+    rq.levelDb = 0;
+    rq.seconds = 1;
+    a->startPulse(rq);
+    p = runPulse(*a, 512, 48000, 0.0, 120, -1, 0, false, t0);
+    NEAR(p.value.empty() ? 0 : p.value[0], 0.501187, 1e-5);
+    rq.levelDb = -20;
+
+    // added to the input, and bit-exact again after the duration (noise input)
+    rq.seconds = 1;
+    a->startPulse(rq);
+    p = runPulse(*a, 512, 3 * 48000, 0.0, 120, -1, 0, false, t0, -1, true);
+    CHECK((p.at == std::vector<long>{0, 24000}));
+    NEAR(p.value.size() > 1 ? p.value[1] : 0, 0.1, 1e-6);
+    CHECK(p.bitExactAfter > 48000);
+
+    // replace: input muted while pulsing (every sample of the active second differs)
+    rq.replace = true;
+    a->startPulse(rq);
+    p = runPulse(*a, 512, 2 * 48000, 0.0, 120, -1, 0, false, t0, -1, true);
+    CHECK(p.at.size() > 40000 && p.lastDiff < 48000 + 512);
+    rq.replace = false;
+
+    // click shape: 1 ms raised cosine (48 samples) starting on the grid
+    rq.click = true;
+    rq.seconds = 0.6;
+    a->startPulse(rq);
+    p = runPulse(*a, 512, 48000, 0.0, 120, -1, 0, false, t0);
+    CHECK(p.at.size() == 96 && p.at.front() == 0 && p.at[47] == 47 && p.at[48] == 24000);  // two clicks in 0.6 s
+    rq.click = false;
+
+    // stops when the transport stops, and does not come back
+    rq.seconds = 10;
+    a->startPulse(rq);
+    p = runPulse(*a, 512, 4 * 48000, 0.0, 120, -1, 0, false, t0, /*stop at block*/ 100);
+    CHECK((p.at == std::vector<long>{0, 24000, 48000}));  // stops at block 100 = sample 51200
+    p = runPulse(*a, 512, 2 * 48000, 0.0, 120, -1, 0, false, t0);
+    CHECK(p.at.empty());
+
+    // stop command; wall-clock deadline
+    a->startPulse(rq);
+    a->stopPulse();
+    p = runPulse(*a, 512, 48000, 0.0, 120, -1, 0, false, t0);
+    CHECK(p.at.empty());
+    rq.untilT = t0 + 0.6;
+    a->startPulse(rq);
+    p = runPulse(*a, 512, 2 * 48000, 0.0, 120, -1, 0, false, t0);
+    printf("  wall-clock deadline 0.6 s:");
+    for (long x : p.at) printf(" %ld", x);
+    printf("\n");
+    CHECK((p.at == std::vector<long>{0, 24000}));
+
+    // protocol: no song position → bad_request; stop → ok
+    Session s;
+    Transport none;
+    std::vector<float> z(256, 0.f);
+    a->pushAudio(z.data(), z.data(), 256, 48000, 0, monoNow(), &none);
+    JValue v = call(s, R"({"cmd":"pulse","uid":")" + a->uid + R"("})", monoNow());
+    CHECK(v.get("code") && v.get("code")->str == "bad_request");
+    Transport play;
+    play.flags = Transport::kPlaying | Transport::kMusicValid | Transport::kTempoValid;
+    play.tempo = 120;
+    a->pushAudio(z.data(), z.data(), 256, 48000, 0, monoNow(), &play);
+    v = call(s, R"({"cmd":"pulse","uid":")" + a->uid + R"(","level_db":3,"seconds":60})", monoNow());
+    printf("  pulse request: level_db %.1f, seconds %.1f\n", num(v.get("level_db")), num(v.get("seconds")));
+    CHECK(v.get("ok")->b && num(v.get("level_db")) == -6.0 && num(v.get("seconds")) == 10.0);
+    v = call(s, R"({"cmd":"pulse","uid":")" + a->uid + R"(","mode":"loud"})", monoNow());
+    CHECK(v.get("code")->str == "bad_request");
+    v = call(s, R"({"cmd":"pulse","uid":")" + a->uid + R"(","stop":true})", monoNow());
+    CHECK(v.get("ok")->b && v.get("stopped")->b);
+    hub.remove(a);
+}
+
 static void testRing() {
     AudioRing ring(1024, 16);
     std::vector<float> a(300), b(300), l(AudioRing::kMaxChunk), r(AudioRing::kMaxChunk);
@@ -410,6 +709,8 @@ int main() {
     testJsonText();
     testSecondAlignment();
     testDelay();
+    testOnsets();
+    testPulse();
     testRing();
     testSnapshot();
     testCommands();

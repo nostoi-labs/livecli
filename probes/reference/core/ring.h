@@ -11,12 +11,22 @@
 
 namespace liveprobe {
 
+/// Host transport at the first frame of a block (VST3 ProcessContext), copied by the audio thread.
+struct Transport {
+    enum : uint32_t { kPlaying = 1, kMusicValid = 2, kTempoValid = 4, kCycleActive = 8 };
+    uint32_t flags = 0;
+    double ppq = 0;        // projectTimeMusic, quarter notes
+    double tempo = 0;      // bpm
+    double cycleStart = 0, cycleEnd = 0;  // loop, quarter notes
+};
+
 struct BlockInfo {
     int32_t frames = 0;
     int32_t channels = 2;
     double t = 0;             // server clock (monotonic seconds) at the start of the block
     int64_t samplePos = -1;   // host sample position of the first frame, -1 when unknown
     double sampleRate = 48000;
+    Transport transport;
 };
 
 class AudioRing {
@@ -49,6 +59,8 @@ public:
             bi.frames = n;
             bi.t = info.t + done / info.sampleRate;
             if (info.samplePos >= 0) bi.samplePos = info.samplePos + done;
+            if (info.transport.flags & Transport::kPlaying)  // chunks of a big block: song position moves on
+                bi.transport.ppq = info.transport.ppq + done / info.sampleRate * info.transport.tempo / 60.0;
             if (!writeChunk(l + done, r ? r + done : nullptr, n, bi)) ok = false;
             done += n;
         }

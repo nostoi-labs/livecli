@@ -15,7 +15,7 @@ const ProductInfo& product() {
         "Reference Probe",
         PROBE_VERSION,
         "rp",
-        {"peak", "rms", "bands", "stereo", "history", "reset", "subscribe", "label", "delay"},
+        {"peak", "rms", "bands", "stereo", "history", "reset", "subscribe", "label", "delay", "onsets", "pulse"},
         [] { return std::unique_ptr<Engine>(new ReferenceEngine()); },
     };
     return info;
