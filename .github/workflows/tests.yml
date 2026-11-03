@@ -2,7 +2,7 @@ name: tests
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         python: ["3.9", "3.12"]
@@ -11,4 +11,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - run: python -m unittest discover -s tests -v
+  macos:
+    # Extra check on macOS; GitHub's macOS runners are often unavailable, so it never blocks.
+    runs-on: macos-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: python -m unittest discover -s tests -v
