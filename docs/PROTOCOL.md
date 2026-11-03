@@ -149,7 +149,16 @@ The only exception to "the probe never alters audio": on explicit request, for a
 - `every`: grid step in quarter notes (1.0 = quarter notes), `offset`: extra position in quarter notes; impulses land on ppq = n·every + offset, to the sample (from `ProcessContext`).
 - Impulse: one sample at `level_db` (default -20 dBFS, max -6), or with `"shape":"click"` a 1 ms raised-cosine burst. `mode`: `"add"` (mixed with the input) or `"replace"` (input muted while pulsing, for a clean measurement).
 - Stops by itself after `seconds` (0.5…10, default 4) and when the transport stops; `{"cmd":"pulse","uid":...,"stop":true}` stops it now. The instance reports `"pulsing": true` in `list` while active.
-- Safety: never louder than -6 dBFS; refuse (`bad_request`) without an explicit request; hosts that send the track to speakers will play the clicks.
+- Safety rules (mandatory for implementations):
+  1. Only on an explicit command. The pulse state is never saved (plugin state, presets, project): after a reload the probe is transparent.
+  2. It ends by itself after `seconds` (max 10, longer requests get 10), exactly to the sample, and also at a clock deadline (`until_t`), which covers a deactivated device that is no longer processed. Afterwards the probe is bit-exact pass-through again.
+  3. It also stops on `{"cmd":"pulse","uid":...,"stop":true}`, when the transport stops after having played (it does not restart with the transport), on `setActive(false)`/`terminate`, and when the instance is removed.
+  4. Level: default -20 dBFS, hard ceiling -6 dBFS enforced both in the server and on the audio thread. The answer reports the effective `level_db`.
+  5. Shapes are transients only (`impulse` = one sample; `click` = 1 ms raised cosine starting on the grid position): no DC, no sustained tone.
+  6. Positions are computed on the audio thread from each block's ProcessContext: sample = round((n·every + offset − block_ppq) · sr · 60 / tempo). A position on a block boundary lands once, in the right block; loops closing inside a block and tempo changes are handled.
+  7. No song position or tempo from the host: `bad_request` ("no pulses"), nothing is emitted. No audio in the last second: `busy`. A request with the transport stopped is accepted (`"playing": false`) and waits for play until its deadline.
+  8. The audio thread takes no locks and allocates nothing.
+  Hosts that send the track to speakers or hardware will play the clicks: keep the level low and ask the user first.
 
 ## 6. Plugin requirements (VST3)
 - Stereo in/out (mono variant optional). Pass-through, zero latency, no tail.
