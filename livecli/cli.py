@@ -9,7 +9,7 @@ import sys
 import time
 
 from . import probes as P
-from .client import CONFIG_DIR, LiveError, call, config
+from .client import CONFIG_DIR, EXIT_CODES, LiveError, call, config
 from .resolve import all_devices, find_device, find_param, find_track, parse_number
 
 COMMANDS = {}      # name -> (function, usage, help, group)
@@ -2244,8 +2244,13 @@ def load_extensions():
             print("live: extension %s not loaded: %s" % (p, e), file=sys.stderr)
 
 
+def _load_modules():
+    from . import cmd_setup  # noqa: F401  (registers its commands)
+
+
 def main(argv=None):
     global JSON
+    _load_modules()
     a = list(sys.argv[1:] if argv is None else argv)
     if "--json" in a:
         JSON = True
@@ -2260,14 +2265,20 @@ def main(argv=None):
     try:
         COMMANDS[name][0](a[1:])
     except LiveError as e:
+        err = {"ok": False, "error": str(e), "code": e.code}
+        if e.hint:
+            err["hint"] = e.hint
         if JSON:
-            print(json.dumps({"ok": False, "error": str(e)}))
+            print(json.dumps(err))
         else:
             print("live: %s" % e, file=sys.stderr)
-        return 1
+            if e.hint:
+                print("  hint: %s" % e.hint, file=sys.stderr)
+        return EXIT_CODES.get(e.code, 1)
     except (OSError, ValueError) as e:
         msg = "connection problem: %s" % e
-        print(json.dumps({"ok": False, "error": msg}) if JSON else "live: " + msg, file=sys.stdout if JSON else sys.stderr)
+        print(json.dumps({"ok": False, "error": msg, "code": "error"}) if JSON else "live: " + msg,
+              file=sys.stdout if JSON else sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

@@ -65,7 +65,7 @@ class LiveCommands(unittest.TestCase):
         code, out, _ = run("devices", "bass")
         self.assertIn("[0.0.0]", out)
         self.assertIn("Glue Compressor", out)
-        self.assertEqual(run("devices", "nope")[0], 1)
+        self.assertEqual(run("devices", "nope")[0], 4)        # not_found
 
     def test_params_and_set_native(self):
         code, out, _ = run("set", "vox", "eq", "1 Gain A", "-3 dB")
@@ -124,7 +124,7 @@ class LiveCommands(unittest.TestCase):
         # the plugin loads and gets its ID, then the CLI waits for it on a socket: here there is none
         n = len(SONG.tracks[2].devices)
         code, out, err = run("probe-add", "synth", "first")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 6)                             # probe error
         self.assertIn("does not report", err)
         d = SONG.tracks[2].devices[0]
         self.assertEqual(d.name, "Loudline Probe")
@@ -292,6 +292,38 @@ class LiveCommands(unittest.TestCase):
         run("clip", "delete", "synth", "2")
         run("clip", "delete", "synth", "3")
 
+    def test_error_codes_and_hints(self):
+        code, r = run_json("devices", "nope")
+        self.assertEqual(code, 4)
+        self.assertEqual(r["code"], "not_found")
+        os.environ["LIVECLI_PORT"] = str(free_port())          # nobody listens there
+        try:
+            code, r = run_json("ping")
+        finally:
+            os.environ["LIVECLI_PORT"] = str(PORT)
+        self.assertEqual(code, 3)
+        self.assertEqual(r["code"], "live_not_running")
+        self.assertIn("live setup", r["hint"])
+
+    def test_setup_doctor_skill_config(self):
+        lib = os.path.join(TMP, "userlib")
+        code, r = run_json("setup", "--user-library", lib)
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.exists(os.path.join(lib, "Remote Scripts", "LiveCLI", "commands.py")))
+        code, r = run_json("doctor")
+        self.assertTrue(any(c["check"] == "LiveCLI answering on port %d" % PORT and c["ok"] for c in r["checks"]))
+        code, out_, _ = run("skill", "install", "--dir", os.path.join(TMP, "skill"))
+        self.assertEqual(code, 0)
+        text = open(os.path.join(TMP, "skill", "SKILL.md")).read()
+        self.assertIn("name: livecli", text)
+        self.assertIn("live compare", text)
+        run("config", "set", "probe_plugin", '"Reference Probe"')
+        code, out_, _ = run("config", "show")
+        self.assertIn("Reference Probe", out_)
+        self.assertEqual(run("wait", "2")[0], 0)
+        code, out_, _ = run("completion", "zsh")
+        self.assertIn("compdef _live live", out_)
+
     def test_unknown_command(self):
         self.assertEqual(run("frobnicate")[0], 2)
 
@@ -349,7 +381,7 @@ class Probes(unittest.TestCase):
         run("probe-label", "#3", "bass di")
         code, r = run_json("measure", "bass di", "0.2")
         self.assertEqual(r["probe"]["probe_id"], 3)
-        self.assertEqual(run("measure", "vox", "0.2")[0], 1)   # ambiguous: two probes on Vox
+        self.assertEqual(run("measure", "vox", "0.2")[0], 4)   # ambiguous: two probes on Vox
 
 
 if __name__ == "__main__":
