@@ -199,6 +199,19 @@ Start with `live doctor` if anything fails; `live wait` waits for Live.
 - Errors: JSON `{"ok":false,"error","code","hint"}`; exit codes 3 Live not running, 4 not found/ambiguous, 5 not supported by Live's API, 6 probe.
 %s
 
+## Recipes
+- **Look before touching:** `live tracks`, `live devices <t>`, `live params <t> <d> [filter]`; `live inspect` when unsure what Live exposes.
+- **Change safely:** `live snapshot before`, make the changes, `live diff before`; undo with `live restore before` (or `live undo`).
+- **Is this plugin worth it?** Probes on, playback looping, then `live abx <t> <device>`; let the user listen with `live abx <t> <device> a|b` (equal loudness), `... done` restores.
+- **Levels:** `live gainstage 10` (tracks) and `live gainstage 10 --hardware` (into every External Audio Effect): VU near 0, peaks under -6 dBFS.
+- **What does this plugin or outboard do?** `live probe-add <t> after <prev> pre`, `live probe-add <t> after <device> post`, then `live compare pre post 10`.
+- **Latency of a device or hardware insert:** `live latency <t> <device>` while it plays; the user types the Hardware Latency correction.
+- **Track Delay for Overbridge / MIDI-clock gear:** `live sync <t>` (probes, pulse reference) or `live grid <t>` (recording); the user types the value.
+- **Did it get better?** `live snapshot x --measure`, change, `live explain x`.
+- **Mix vs reference:** reference on its own track with a probe, then `live refcompare <mix-probe> <ref-probe>`.
+- **Which plugin for a job:** `live plugins <query>` (e.g. `la-2a`, `opto`, `plate`, `tape`), answer from what the user owns.
+- **Health:** `live check`, and for a saved set `live als-lint <file>`.
+
 ## Commands
 %s
 """ % (gaps_note, "\n\n".join(groups))

@@ -5,6 +5,7 @@ A command line for **Ableton Live**, designed to be driven by **AI agents** (Cla
 - **No MCP server, no daemon:** a small Remote Script inside Live plus a `live` command. Each call is one short JSON line on localhost. The output is compact text, or JSON with `--json`, which keeps agent token usage low.
 - **Sees the whole set:** tracks, **return tracks and master**, devices inside racks, plugin parameters, routing (including External Audio Effect hardware inserts), clips, scenes, notes, locators, transport.
 - **Changes things safely:** set parameters by their display value (`-3 dB`, `250 Hz`, `Bell`), even on AU/VST plugins (set, read back, binary search). Replace devices without feedback loops through hardware. Use undo.
+- **Measures the studio, not just the set:** level-matched A/B, gain staging in dBu with your interface calibration, phase and polarity between tracks, the measured effect of a change, a live reference comparison, the real latency of plugins and hardware inserts, Track Delay for Overbridge and MIDI-clock hardware, fingerprints of outboard gear (response, noise, THD, latency) over time, session recall with SessionRecall.
 - **Listens:** the **Live Probe Protocol** ([docs/PROTOCOL.md](docs/PROTOCOL.md)) lets probe plugins on any track publish real-time measurements: LUFS, true peak, 1/3-octave bands, stereo correlation. `live compare` tells you what a plugin, or an outboard insert, really does to the signal. `live mix` tells you which tracks crowd the same frequencies.
 
 ```
@@ -43,7 +44,7 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 `live help` lists everything; `live help <command>` shows one command. The groups are:
 
 - **Info:** `ping`, `song`, `events` (pushed by Live's listeners), `cpu`, `impact` (CPU impact per track), `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`, `automation` (automated and overridden parameters), `events` (what changes while it happens)
-- **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`, `re-enable-automation`
+- **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`, `re-enable-automation`, `back-to-arrangement`
 - **Tracks and mixer:** `track-new`, `track-delete`, `track-duplicate`, `track-rename`, `track-color`, `solo`, `mute`, `arm`, `monitor`, `volume`, `pan`, `send`, `pan-mode` (stereo or split), `crossfade`, `activator`, `cue`
 - **Devices:** `set`, `on`, `off`, `ab` (Live 12 A/B compare), `preset` (a plugin's presets, when it publishes them to Live, and which parameters it hides from Live), `sidechain`, `insert` (a Live device by name, no browser), `duplicate`, `load`, `delete`, `move`, `rename`, `replace`, `mode`. `devices` also shows the latency Live assumes for each device.
 - **Racks:** `rack` (chains with their mixer, macros, variations, Drum Rack pads), `chain` (name, mute, solo, volume, pan of a chain), `chain-new`, `variation store|recall|delete|randomize`, `pad` (mute/solo a Drum Rack pad)
@@ -53,10 +54,10 @@ Live loads Remote Scripts at startup. After you change `commands.py`, run `live 
 - **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `sync`, `probe-reset`, `probe-label`
 - **Timing:** `grid <track> [bars] [start-bar] [--grid 1/8]` records a track (bounce) and measures where its transients fall against Live's grid; `sync` does the same live with probes (`onsets`). See *Track Delay* below.
 - **Setup and reliability:** `setup` (installs the Remote Script), `doctor`, `wait`, `config`, `completion`, `skill` (a SKILL.md for agents, generated from these commands). Errors are JSON with a stable `code` and a `hint`; exit codes 3 Live not running, 4 not found or ambiguous, 5 not supported by Live's API, 6 probe.
-- **Safety net:** `snapshot [name]` saves every mixer, device and chain value; `diff` shows what changed since (or between two snapshots); `restore <name> [filter]` puts values back, in one undo step.
+- **Safety net:** `snapshot [name]` saves every mixer, device and chain value; `diff` shows what changed since (or between two snapshots); `restore <name> [filter]` puts values back, in one undo step; `snapshots` lists them.
 - **View and offline:** `show` (bring a track, device or clip into view for the user), `view` (Session, Arranger, Detail/Clip...), `als`, `als-lint` (missing samples, hardware outputs shared by several External Audio Effects, devices off...), `als-diff` (what changed between two versions of a set). Read-only.
 - **Mix tools nobody else has (with probes):** `abx` (level-matched A/B of a device: equal loudness, honest comparison), `gainstage` (peak, VU and dBu per track and into every hardware insert, with your interface calibration), `phase` (delay and polarity between two tracks), `explain` (what a set of changes did to the sound: `snapshot --measure` first), `refcompare` (your mix against a reference playing in Live, tonal balance per band), `check` (set health).
-- **Hybrid studio:** `fingerprint` (frequency response, gain, noise, latency and polarity of a hardware insert or a device, with test signals from the probes, compared over time), `recall` (Live snapshot + outboard settings from SessionRecall + fingerprints).
+- **Hybrid studio:** `fingerprint` (frequency response, gain, noise, latency and polarity of a hardware insert or a device, with test signals from the probes, compared over time; `fingerprints` lists the history), `recall` (Live snapshot + outboard settings from SessionRecall + fingerprints).
 - **Other:** `inspect` (what Live's API offers on the song, a track, mixer, device, parameter, clip or scene: properties with values and methods; read-only), `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
 - **Italian aliases:** `stato`, `tracce`, `parametri`, `imposta`, `accendi`/`spegni`, `carica`, `cancella`, `sposta`, `sostituisci`, `cerca`, `livelli`, `mandata`, `locatori`, `vai`, `modo`, `cattura`, `sonde`, `misura`, `confronta`, …
 
@@ -134,6 +135,10 @@ def register(cli):
         t = cli.track(a[0])
         print("hello", t["name"])
 ```
+
+## For agents: the skill
+
+`live skill install` writes `SKILL.md` (generated from the commands, plus rules and recipes) to `~/.claude/skills/livecli/`, or to `--dir`, for example a project's `.claude/skills/livecli/`. Claude Code then knows the commands without reading this README. Regenerate it after updating LiveCLI.
 
 ## Develop
 
