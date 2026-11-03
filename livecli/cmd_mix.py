@@ -100,7 +100,9 @@ def _match_utility(ref, create=True):
 
 def _set_utility_gain(ref, path, db):
     ps = call("params", track=ref, device=path)["params"]
-    g = next(p for p in ps if p["name"] == "Gain")
+    g = next((p for p in ps if p["name"] in ("Output", "Gain")), None)      # Live 12: "Output"
+    if g is None:
+        raise LiveError("Utility has no Output/Gain parameter here", code="not_supported_by_live_api")
     call("set_param", track=ref, device=path, param=g["i"], text="%.2f dB" % db)
 
 
@@ -269,11 +271,16 @@ def c_phase(a):
         remove_added(added)
     res = dict(r, track_a=ta["name"], track_b=tb["name"])
     adv = []
-    if (r.get("correlation_peak") or 0) < 0.3:
-        adv.append("low correlation: different material, the phase relation is not meaningful here")
+    corr, amb = r.get("correlation_peak") or 0, r.get("ambiguity") or 0
+    if corr < 0.3 or (amb > 0.6 and corr < 0.9):
+        adv.append("not reliable (correlation %.2f, ambiguity %.2f): the two tracks don't carry the same material, or it is "
+                   "periodic (steady pitched notes); measure on a part with transients or noise" % (corr, amb))
     else:
+        if amb > 0.6:
+            adv.append("periodic material (ambiguity %.2f): the delay is right if it is small; a value off by one pitch "
+                       "period is possible, check by ear" % amb)
         if r.get("polarity") == -1:
-            adv.append("polarity is inverted: flip %s (Utility: Phz-L and Phz-R)" % tb["name"])
+            adv.append("polarity is inverted: flip %s (Utility: Left Inv and Right Inv)" % tb["name"])
         if abs(r.get("delay_ms") or 0) >= 0.05:
             late, early = (tb["name"], ta["name"]) if r["delay_ms"] > 0 else (ta["name"], tb["name"])
             adv.append("%s is %.2f ms late: delay %s by %.2f ms (Align Delay or Track Delay) to line them up"
@@ -330,18 +337,29 @@ def c_explain(a):
         if l0 is not None and l1 is not None:
             e["loudness_db"] = round(l1 - l0, 2)
         if m0.get("bands_mid") and m1.get("bands_mid"):
-            g = [None if x <= -90 else y - x for x, y in zip(m0["bands_mid"], m1["bands_mid"])]
+            top = max(max(m0["bands_mid"]), max(m1["bands_mid"]))
+            # bands far below the loudest one are measurement noise: ignore them
+            g = [None if max(x, y) < top - 45 else y - x for x, y in zip(m0["bands_mid"], m1["bands_mid"])]
             base = statistics.median([x for x in g if x is not None]) if any(x is not None for x in g) else 0
-            e["regions"] = P.regions(P.CENTERS, g, base)
+            e["regions"] = P.regions(P.CENTERS, g, base, threshold=1.5)
         for k in ("true_peak_dbtp", "plr", "width", "correlation"):
             if m0.get(k) is not None and m1.get(k) is not None:
                 e[k] = round(m1[k] - m0[k], 2)
         sound.append(e)
+    def devices_of(items):
+        out_ = {}
+        for k, lab, *_ in items:
+            parts = k.split("|")
+            if len(parts) >= 5 and parts[1] == "dev":
+                out_.setdefault("%s / %s" % (lab.split(" / ")[0], parts[4]), 0)
+        return sorted(out_)
     res = {"since": old["time"], "changes": [{"what": lab, "from": ot, "to": nt} for _, lab, ot, nt, _, _ in changed],
-           "sound": sound}
+           "devices_added": devices_of(added), "devices_removed": devices_of(removed), "sound": sound}
     if C.JSON:
         return C.out(res)
-    print("since %s: %d parameter changes" % (old["time"], len(changed)))
+    print("since %s: %d parameter changes%s%s" % (old["time"], len(changed),
+          ", added " + ", ".join(res["devices_added"]) if res["devices_added"] else "",
+          ", removed " + ", ".join(res["devices_removed"]) if res["devices_removed"] else ""))
     for c in res["changes"]:
         print("  %-58s %s -> %s" % (c["what"][:58], c["from"], c["to"]))
     for e in sound:

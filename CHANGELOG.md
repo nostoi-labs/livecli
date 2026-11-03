@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 (unreleased, 2026-11-03)
+
+Tested in Live 12.4.16 with Reference/Loudline Probe 0.1.3.
+
+- Setup and reliability: `setup`, `doctor`, `wait`, `config`, `completion`, `skill`; error codes, hints, exit codes; CI.
+- Devices: `preset` (plugin presets and hidden parameters), `sidechain`.
+- MIDI: `notes-edit` (humanize, swing, ratchet, retrograde, arp, scale degrees, legato, velocity curve), `pattern`, `euclid`; `groove`, `warp-move`, `arr-from-session`.
+- Offline: `als-lint`, `als-diff`. `docs/API-GAPS.md` for agents.
+- `events` pushed by Live listeners (song, tracks, mixer, every device parameter).
+- New: `abx` (level-matched A/B), `gainstage` (VU and dBu, hardware inputs), `phase`, `explain` (+ `snapshot --measure`), `refcompare`, `check`, `fingerprint`, `recall` (SessionRecall).
+- Fixes: snapshot diff/restore recognise devices by name and order, not position (a device insertion no longer looks like removals); Utility parameter names of Live 12.
+- Protocol: `signal` (§5.12), `thd` (§5.13, requested).
+
 ## 0.1.0 (unreleased, 2026-11-03)
 
 First complete version, tested in Ableton Live 12.4.16 on macOS 27 (Apple Silicon).

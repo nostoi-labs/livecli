@@ -16,6 +16,9 @@ Verified with Ableton Live 12.4.16 on macOS 27 using `live inspect`. Run `live i
 | Max for Live modulator mapping (Map button) | not exposed | ask the user |
 | Native devices by name in `insert` | only Live's built-in devices; Max for Live devices (Align Delay, LFO…) must be loaded from the browser | `live load <track> audio_effects/<name>` |
 | Pad names in a Drum Rack | read-only | rename the chain inside the pad |
+| Replace the sample of an audio clip | not exposed | load the file in a new clip (`live arr-add <track> <bar> file <path>`) |
+| Add or remove warp markers | only reading and moving (`live warp-move`); the last marker is a "shadow" marker and cannot be moved | the user, in the clip view |
+| Plugin parameters | `live preset` lists all of a plugin's parameter names and tells which ones are not exposed (e.g. FabFilter Pro-Q 4: 1 of 600) | Configure in Live, then `live set` |
 
 ## Traps found while testing
 - **Automatic arm.** Live arms the selected MIDI track on its own (`implicit_arm`). Any arrangement recording also records on it, overwriting its clips in the recorded region. `live bounce` selects its own track and refuses to record while any other track is armed in any way.

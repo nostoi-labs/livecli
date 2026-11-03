@@ -93,7 +93,7 @@ If the server does not support `compare`, the client computes `gain_db` itself f
 
 ### 5.1 `hello`
 → `{"cmd":"hello"}`
-← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","onsets","pulse","signal","reset","subscribe","label"]}`
+← `{"ok":true,"protocol":"0.1","product":"Loudline Probe","version":"0.1.0","pid":4242,"host":"Ableton Live 12.4.7","capabilities":["peak","rms","true_peak","lufs","lra","bands","stereo","history","compare","transfer","delay","onsets","pulse","signal","thd","reset","subscribe","label"]}`
 
 ### 5.2 `list`
 → `{"cmd":"list"}`
@@ -167,6 +167,14 @@ Test signals for measuring a chain (for example the frequency response, noise an
 - `kind`: `"pink"` (pink noise, RMS at `level_db`), `"sine"` (with `"freq":1000`, peak at `level_db`), `"sweep"` (log sine sweep, `"from":20,"to":20000`, over `seconds`, peak at `level_db`), `"silence"` (zeros, for the noise floor of what follows).
 - `mode`: `"replace"` (default for `signal`) or `"add"`. Fades of 10 ms at start and end, no clicks.
 - `seconds` 0.5…30. Unlike `pulse` it does not need the transport to play (hardware inserts are measured with Live stopped too, as long as the track is processed); if the host stops calling the plugin the clock deadline still ends it.
+
+### 5.13 `thd` (optional, capability `thd`)
+Distortion of what the probe receives, while a sine plays through the chain (for example from `signal` on an earlier probe).
+→ `{"cmd":"thd","uid":"<uid>","freq":1000,"seconds":2}`
+← `{"ok":true,"uid":"...","freq":1000.0,"fundamental_db":-20.1,"thd_pct":0.012,"thd_n_pct":0.03,"thd_n_db":-70.5,"harmonics_db":[-92.1,-98.4,...],"noise_db":-110.2}`
+- Windowed FFT fine enough to separate the harmonics (e.g. 65536 points, Blackman-Harris), averaged over `seconds`.
+- `harmonics_db`: levels of harmonics 2…10 relative to the fundamental. `thd_pct` from the harmonics, `thd_n_pct` from everything except the fundamental (±1/2 octave notch, DC excluded).
+- `busy` if no stable sine near `freq` is found.
 
 ## 6. Plugin requirements (VST3)
 - Stereo in/out (mono variant optional). Pass-through, zero latency, no tail.

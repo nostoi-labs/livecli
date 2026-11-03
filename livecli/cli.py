@@ -1730,6 +1730,74 @@ def c_arr_add(a):
     out(r, "\n".join("  @%d  bar %7.2f - %7.2f  %s" % (c["arr"], c["start_bar"], c["end_bar"], c["name"]) for c in r))
 
 
+@command("preset", "preset <track> <device> [index]", "a plugin's own presets (when it publishes them to Live) and the "
+         "names of all its parameters, also those not configured in Live; with index, select a preset", "devices")
+def c_preset(a):
+    need(a, 2, "preset <track> <device> [index]")
+    t = track(a[0])
+    d = find_device(t, a[1])
+    r = call("presets", track=t["ref"], device=d["path"], index=int(a[2]) if len(a) > 2 else None)
+    if JSON:
+        return out(r)
+    print("%s / %s: %d presets%s, %d of %d parameters exposed to Live" % (t["name"], r["device"], len(r["presets"]),
+          ", selected %s" % r["selected"] if r["presets"] else "", r["exposed"], len(r["all_parameter_names"]) or r["exposed"]))
+    for i, p_ in enumerate(r["presets"][:60]):
+        print("  %s%3d %s" % ("*" if i == r["selected"] else " ", i, p_))
+    exposed = {p_["name"] for p_ in call("params", track=t["ref"], device=d["path"])["params"]}
+    hidden = [n for n in r["all_parameter_names"] if n not in exposed]
+    if hidden:
+        print("  %d not exposed (Configure in Live to use them): %s%s" % (len(hidden), ", ".join(hidden[:25]),
+              " ..." if len(hidden) > 25 else ""))
+
+
+@command("sidechain", "sidechain <track> <device> [source-type] [channel]", "show or set a device's sidechain input "
+         "(Compressor, Gate, Auto Filter...)", "devices")
+def c_sidechain(a):
+    need(a, 2, "sidechain <track> <device> [source-type] [channel]")
+    t = track(a[0])
+    d = find_device(t, a[1])
+    r = call("device_routing", track=t["ref"], device=d["path"], type=a[2] if len(a) > 2 else None,
+             channel=a[3] if len(a) > 3 else None)
+    out(r, "%s / %s: sidechain from %s / %s\n  sources: %s\n  channels: %s" % (t["name"], r["device"], r["type"], r["channel"],
+        " | ".join(r["types"]), " | ".join(r["channels"])))
+
+
+@command("warp-move", "warp-move <track> <slot|@arr> <beat> <distance>", "move a warp marker by a distance in beats "
+         "(Live's API can move warp markers, not add or remove them)", "clips")
+def c_warp_move(a):
+    need(a, 4, "warp-move <track> <clip> <beat> <distance>")
+    out(call("warp_marker_move", track=track(a[0])["ref"], beat=float(a[2]), distance=float(a[3]), **clip_ref(a[1])))
+
+
+@command("groove", "groove [<track> <slot|@arr> [index|clear]] [--amount 0..1.3]", "the set's groove pool; apply a "
+         "groove to a clip or clear it; global groove amount", "clips")
+def c_groove(a):
+    kw = {}
+    if "--amount" in a:
+        kw["amount"] = float(a[a.index("--amount") + 1])
+    pos = [x for k, x in enumerate(a) if not x.startswith("--") and (k == 0 or a[k - 1] != "--amount")]
+    if len(pos) >= 2:
+        kw.update(track=track(pos[0])["ref"], **clip_ref(pos[1]))
+        if len(pos) > 2:
+            if pos[2] == "clear":
+                kw["clear"] = True
+            else:
+                kw["index"] = int(pos[2])
+    r = call("groove", **kw)
+    out(r, "\n".join(["groove pool:"] + ["  %d %s" % (g["i"], g["name"]) for g in r["pool"]] +
+                     (["clip groove: %s" % r.get("clip_groove")] if "clip_groove" in r else []) + ["amount: %s" % r.get("amount")]))
+
+
+@command("arr-from-session", "arr-from-session <scene:bars>... [--at bar]", "lay session scenes out in the arrangement, "
+         "e.g. 0:8 1:16 2:8 (scene 0 for 8 bars, then scene 1 for 16...)", "clips")
+def c_arr_from_session(a):
+    need(a, 1, "arr-from-session <scene:bars>... [--at bar]")
+    at = bar_to_beats(a[a.index("--at") + 1]) if "--at" in a else 0.0
+    sc = [[int(x.split(":")[0]), float(x.split(":")[1])] for k, x in enumerate(a) if ":" in x and (k == 0 or a[k - 1] != "--at")]
+    r = call("arr_from_session", scenes=sc, time=at)
+    out(r, "%d clips placed, ending at bar %g" % (r["clips"], r["end_bar"]))
+
+
 # ================================================================== racks and native devices
 @command("rack", "rack <track> <device>", "chains of a rack (mixer, devices), macros, variations, Drum Rack pads", "devices")
 def c_rack(a):
@@ -1888,12 +1956,30 @@ def _take():
     return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "values": call("snapshot", timeout=30)}
 
 
+def _stable_keys(values):
+    """Map snapshot keys to keys that survive device moves: a device is 'track | name #n' (n-th device with that name
+    on the track, in chain order), not its position. Returns {stable: (key, label, raw, text)}."""
+    out_, seen = {}, {}
+    for k, lab, v, txt in values:
+        parts = k.split("|")
+        if len(parts) >= 5 and parts[1] == "dev":
+            dev_id = (parts[0], parts[2], parts[4])
+            if dev_id not in seen:
+                n = sum(1 for d in seen if d[0] == parts[0] and d[2] == parts[4])
+                seen[dev_id] = n
+            sk = "%s|dev|%s#%d|%s" % (parts[0], parts[4], seen[dev_id], parts[3])
+        else:
+            sk = k
+        out_[sk] = (k, lab, v, txt)
+    return out_
+
+
 def _diff(old, new):
-    o = {k: (lab, v, txt) for k, lab, v, txt in old["values"]}
-    n = {k: (lab, v, txt) for k, lab, v, txt in new["values"]}
-    changed = [(k, o[k][0], o[k][2], n[k][2], o[k][1], n[k][1]) for k in n if k in o and o[k][1] != n[k][1]]
-    added = [(k, n[k][0], n[k][2]) for k in n if k not in o]
-    removed = [(k, o[k][0], o[k][2]) for k in o if k not in n]
+    """changed: (current key, label, old text, new text, old raw, new raw); added/removed: (key, label, text)."""
+    o, n = _stable_keys(old["values"]), _stable_keys(new["values"])
+    changed = [(n[k][0], n[k][1], o[k][3], n[k][3], o[k][2], n[k][2]) for k in n if k in o and o[k][2] != n[k][2]]
+    added = [(n[k][0], n[k][1], n[k][3]) for k in n if k not in o]
+    removed = [(o[k][0], o[k][1], o[k][3]) for k in o if k not in n]
     return changed, added, removed
 
 
@@ -1963,13 +2049,38 @@ def c_restore(a):
         print("  skipped %s: %s" % (k, why))
 
 
-@command("events", "events [seconds] [filter]", "print what changes in the set while it happens (polls a snapshot every 0.5 s)", "info")
+@command("events", "events [seconds] [filter] [--poll]", "print what changes in the set while it happens: pushed by "
+         "Live's listeners (song, tracks, mixer, every device parameter); --poll compares snapshots instead", "info")
 def c_events(a):
-    sec = float(a[0]) if a else 30
-    f = " ".join(a[1:]).lower()
+    nums = [x for x in a if re.fullmatch(r"\d+(\.\d+)?", x)]
+    sec = float(nums[0]) if nums else 30
+    f = " ".join(x for x in a if x not in nums and not x.startswith("--")).lower()
+    t_end = time.time() + sec
+    if "--poll" not in a:
+        try:
+            st = call("events_start", timeout=30)
+        except LiveError:
+            st = None
+        if st is not None:
+            seq, last = st["seq"], {}
+            try:
+                while time.time() < t_end:
+                    time.sleep(0.2)
+                    r = call("events_poll", since=seq)
+                    seq = r["seq"]
+                    latest = {}
+                    for e in r["events"]:               # a knob turn sends many values: keep the last one per key
+                        latest[e["key"]] = e
+                    for k, e in latest.items():
+                        if (not f or f in e["label"].lower()) and last.get(k) != e["value"]:
+                            print(json.dumps(e) if JSON else "%s %s: %s" % (time.strftime("%H:%M:%S"), e["label"], e["value"]))
+                            last[k] = e["value"]
+                    sys.stdout.flush()
+            finally:
+                call("events_stop")
+            return
     prev = _take()
     prev_song = call("song")
-    t_end = time.time() + sec
     while time.time() < t_end:
         time.sleep(0.5)
         cur = _take()
@@ -1982,12 +2093,6 @@ def c_events(a):
         for k, lab, ot, nt, _, _ in changed:
             if k != "song|tempo" and (not f or f in lab.lower()):
                 print("%s %s: %s -> %s" % (stamp, lab, ot, nt))
-        for k, lab, txt in added:
-            if not f or f in lab.lower():
-                print("%s + %s" % (stamp, lab))
-        for k, lab, txt in removed:
-            if not f or f in lab.lower():
-                print("%s - %s" % (stamp, lab))
         sys.stdout.flush()
         prev, prev_song = cur, song
 
@@ -2252,7 +2357,7 @@ def load_extensions():
 
 
 def _load_modules():
-    from . import cmd_setup, cmd_midi, cmd_offline, cmd_mix  # noqa: F401  (they register their commands)
+    from . import cmd_setup, cmd_midi, cmd_offline, cmd_mix, cmd_hardware  # noqa: F401  (they register their commands)
 
 
 def main(argv=None):

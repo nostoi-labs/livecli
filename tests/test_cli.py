@@ -249,6 +249,19 @@ class LiveCommands(unittest.TestCase):
         code, d = run_json("diff", "t1")
         self.assertEqual(d["changed"], [])
 
+    def test_diff_survives_device_moves(self):
+        run("snapshot", "mv")
+        run("set", "vox", "soothe2", "depth", "=0.75")
+        run("insert", "vox", "Utility", "0")                # every device moves one position right
+        code, d = run_json("diff", "mv")
+        self.assertEqual([c[1] for c in d["changed"]], ["Vox Main / soothe2 / depth"])
+        self.assertTrue(all("Utility" in x[1] for x in d["added"]))
+        self.assertEqual(d["removed"], [])
+        code, r = run_json("restore", "mv")
+        self.assertEqual(r["set"], 1)
+        self.assertAlmostEqual(SONG.tracks[0].devices[2].parameters[1].value, 0.5)
+        del SONG.tracks[0].devices[0]
+
     def test_plugins_inventory(self):
         code, r = run_json("plugins", "--refresh")
         names = {(p["vendor"], p["name"]): p for p in r["plugins"]}

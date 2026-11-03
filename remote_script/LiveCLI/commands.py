@@ -15,7 +15,7 @@ import re
 
 import Live
 
-VERSION = 13
+VERSION = 15
 DEFERRED = object()
 
 
@@ -1282,6 +1282,80 @@ def c_pad_set(cs, req):
     return {"note": pad.note, "name": pad.name, "mute": pad.mute, "solo": pad.solo}
 
 
+# ------------------------------------------------------------------ plugin presets, device input routing (sidechain)
+def c_presets(cs, req):
+    """A plugin's own presets (if it publishes them to Live); with index, select one. Also all its parameter names."""
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    presets = list(_safe(d, "presets", []) or [])
+    if req.get("index") is not None:
+        if not presets:
+            raise ValueError("%s publishes no presets to Live" % d.name)
+        d.selected_preset_index = int(req["index"])
+    names = []
+    try:
+        names = list(d.get_parameter_names())
+    except Exception:
+        pass
+    return {"device": d.name, "presets": presets, "selected": _safe(d, "selected_preset_index"),
+            "all_parameter_names": names, "exposed": len(d.parameters)}
+
+
+def c_device_routing(cs, req):
+    """Input routing of a device that has one (sidechain of Compressor, Gate, Auto Filter...): show or set."""
+    _, _, d = _resolve(cs, req["track"], req["device"])
+    if not hasattr(d, "available_input_routing_types"):
+        raise ValueError("%s has no input routing (sidechain)" % d.name)
+    if req.get("type"):
+        d.input_routing_type = _pick(d.available_input_routing_types, req["type"], "sidechain source")
+    if req.get("channel"):
+        d.input_routing_channel = _pick(d.available_input_routing_channels, req["channel"], "sidechain channel")
+    return {"device": d.name, "type": _name(d, "input_routing_type"), "channel": _name(d, "input_routing_channel"),
+            "types": [x.display_name for x in d.available_input_routing_types],
+            "channels": [x.display_name for x in d.available_input_routing_channels]}
+
+
+def c_warp_marker_move(cs, req):
+    _, _, c = _clip(cs, req)
+    c.move_warp_marker(float(req["beat"]), float(req["distance"]))
+    return [{"beat": m.beat_time, "sample_time": m.sample_time} for m in c.warp_markers]
+
+
+def c_groove(cs, req):
+    """Grooves in the set's groove pool; with track+slot, show or set (index) or clear the clip's groove."""
+    s = _song(cs)
+    pool = list(_safe(_safe(s, "groove_pool"), "grooves", []) or [])
+    out = {"pool": [{"i": i, "name": g.name} for i, g in enumerate(pool)]}
+    if req.get("track") is not None:
+        _, _, c = _clip(cs, req)
+        if req.get("clear"):
+            c.groove = None
+        elif req.get("index") is not None:
+            c.groove = pool[int(req["index"])]
+        g = _safe(c, "groove")
+        out["clip_groove"] = g.name if g is not None else None
+    if req.get("amount") is not None:
+        s.groove_amount = float(req["amount"])
+    out["amount"] = _safe(s, "groove_amount")
+    return out
+
+
+def c_arr_from_session(cs, req):
+    """Lay session scenes out in the arrangement: scenes = [[scene index, bars], ...], starting at `time` beats."""
+    s = _song(cs)
+    t0 = float(req.get("time", 0.0))
+    bpb = _beats_per_bar(s)
+    at = t0
+    placed = 0
+    for sc_i, bars in req["scenes"]:
+        for t in s.tracks:
+            slot = t.clip_slots[int(sc_i)]
+            if slot.has_clip:
+                t.duplicate_clip_to_arrangement(slot.clip, at)
+                placed += 1
+        at += float(bars) * bpb
+    return {"clips": placed, "end": at, "end_bar": _bar(s, at)}
+
+
 # ------------------------------------------------------------------ native devices without the browser
 def c_insert_device(cs, req):
     """Insert a Live device by name ('EQ Eight', 'Compressor', 'Utility'...) at an index, on a track or in a chain."""
@@ -1402,6 +1476,76 @@ def c_set_values(cs, req):
         except Exception as e:
             skipped.append([key, "%s: %s" % (type(e).__name__, e)])
     return {"set": done, "skipped": skipped}
+
+
+# ------------------------------------------------------------------ events pushed by Live (listeners)
+def _ev_state(cs):
+    if not hasattr(cs, "_lc_ev"):
+        cs._lc_ev = {"listeners": [], "events": [], "seq": 0}
+    return cs._lc_ev
+
+
+def _ev_push(cs, key, label, value):
+    st = _ev_state(cs)
+    st["seq"] += 1
+    st["events"].append({"seq": st["seq"], "key": key, "label": label, "value": value})
+    if len(st["events"]) > 2000:
+        del st["events"][:1000]
+
+
+def _ev_add(cs, obj, prop, fn):
+    add = getattr(obj, "add_%s_listener" % prop, None)
+    rem = getattr(obj, "remove_%s_listener" % prop, None)
+    if add is None or rem is None:
+        return
+    try:
+        add(fn)
+        _ev_state(cs)["listeners"].append((rem, fn))
+    except Exception:
+        pass
+
+
+def c_events_stop(cs, req):
+    st = _ev_state(cs)
+    for rem, fn in st["listeners"]:
+        try:
+            rem(fn)
+        except Exception:
+            pass
+    st["listeners"] = []
+    return True
+
+
+def c_events_start(cs, req):
+    """Register listeners on the song, tracks, mixers and every device parameter. Events are read with events_poll."""
+    c_events_stop(cs, req)
+    s = _song(cs)
+    for prop in ("tempo", "is_playing", "record_mode", "loop", "metronome", "signature_numerator", "tracks", "scenes"):
+        _ev_add(cs, s, prop, lambda prop=prop: _ev_push(cs, "song|" + prop, "song " + prop,
+                                                       str(len(getattr(s, prop))) if prop in ("tracks", "scenes") else str(getattr(s, prop))))
+    for ref, t in _tracks(cs):
+        for prop in ("mute", "solo", "arm", "name", "devices"):
+            if prop == "arm" and not _safe(t, "can_be_armed"):
+                continue
+            if ref == "m" and prop in ("mute", "solo", "arm"):
+                continue
+            _ev_add(cs, t, prop, lambda t=t, ref=ref, prop=prop: _ev_push(
+                cs, "%s|track|%s" % (ref, prop), "%s / %s" % (t.name, prop),
+                str(len(t.devices)) + " devices" if prop == "devices" else str(getattr(t, prop))))
+        md = t.mixer_device
+        params = [("mixer volume", md.volume), ("mixer pan", md.panning)] + [("send %s" % chr(65 + i), x) for i, x in enumerate(md.sends)]
+        for path, d in _walk_devices(t):
+            params += [("%s / %s" % (d.name, p.name), p) for p in d.parameters]
+        for label, p in params:
+            _ev_add(cs, p, "value", lambda p=p, t=t, ref=ref, label=label: _ev_push(
+                cs, "%s|param|%s" % (ref, label), "%s / %s" % (t.name, label), str(p)))
+    return {"listeners": len(_ev_state(cs)["listeners"]), "seq": _ev_state(cs)["seq"]}
+
+
+def c_events_poll(cs, req):
+    st = _ev_state(cs)
+    since = int(req.get("since", 0))
+    return {"seq": st["seq"], "events": [e for e in st["events"] if e["seq"] > since], "listening": len(st["listeners"])}
 
 
 # ------------------------------------------------------------------ audio capture (optional)
