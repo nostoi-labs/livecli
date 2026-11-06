@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "livecli"
+version = "0.2.0"
+description = "Command line for Ableton Live, built for AI agents: control the set and measure the sound with probe plugins"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nostoi" }]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["ableton", "live", "cli", "audio", "ai-agents", "mixing", "measurement"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio",
+]
+
+[project.urls]
+Homepage = "https://github.com/nostoi-labs/livecli"
+Issues = "https://github.com/nostoi-labs/livecli/issues"
+Changelog = "https://github.com/nostoi-labs/livecli/blob/main/CHANGELOG.md"
+
+[project.scripts]
+live = "livecli.cli:main"
+
+[tool.setuptools]
+packages = ["livecli", "livecli.remote_script.LiveCLI"]
+
+[tool.setuptools.package-dir]
+"livecli.remote_script.LiveCLI" = "remote_script/LiveCLI"
+
+[tool.setuptools.package-data]
+livecli = ["catalog.json"]

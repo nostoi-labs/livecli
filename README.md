@@ -32,12 +32,16 @@ $ live compare pre post 10
 
 Requirements: macOS, Ableton Live 11.3 or later (tested on Live 12.4), Python 3.9+ (standard library only).
 
-1. Copy `remote_script/LiveCLI` to `~/Music/Ableton/User Library/Remote Scripts/`.
-2. In Live, open **Settings > Link, Tempo & MIDI**. In a free **Control Surface** slot choose **LiveCLI**, with Input and Output set to None.
-3. Put `live` on your PATH, e.g. `ln -s "$PWD/live" ~/.local/bin/live`.
-4. Check: `live ping` should print `pong`.
+1. Install the `live` command, one of:
+   - Homebrew: `brew install nostoi-labs/tap/livecli`
+   - pipx or pip: `pipx install livecli`
+   - from git: `git clone https://github.com/nostoi-labs/livecli` and `ln -s "$PWD/livecli/live" ~/.local/bin/live`
+2. `live setup` copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
+3. In Live, open **Settings > Link, Tempo & MIDI**. In a free **Control Surface** slot choose **LiveCLI**, with Input and Output set to None.
+4. Check: `live doctor`, then `live ping` should print `pong`.
+5. Optional, for measurements: the probe plugins (VST3, notarized) from the [Releases](https://github.com/nostoi-labs/livecli/releases) page, or `brew install --cask nostoi-labs/tap/reference-probe` (MIT) and `nostoi-labs/tap/loudline-probe` (freeware). Install them with Live closed, then **Settings > Plug-ins > Rescan**.
 
-Live loads Remote Scripts at startup. After you change `commands.py`, run `live reload`: no restart is needed. After you change `__init__.py`, restart Live.
+Live loads Remote Scripts at startup. After updating LiveCLI run `live setup` again: changes to `commands.py` are reloaded without a restart, changes to `__init__.py` need a Live restart.
 
 ## Install with an AI agent
 
@@ -45,7 +49,7 @@ A user can simply tell their agent: *"I want to use LiveCLI: install it and add 
 
 **What the agent does (terminal):**
 1. Check the platform: macOS with Ableton Live 11.3 or later (12.x recommended), Python 3.9+.
-2. Get LiveCLI: `git clone https://github.com/nostoi-labs/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`), or the package once it is published.
+2. Get LiveCLI: `brew install nostoi-labs/tap/livecli`, or `pipx install livecli`, or `git clone https://github.com/nostoi-labs/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`).
 3. `live setup`: copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
 4. Optional probes for measurements: install the Reference Probe or Loudline Probe package (VST3, notarized) from the Releases page.
 5. `live skill install` (Claude Code; `--dir <project>/.claude/skills/livecli` for a project skill). Next session the agent knows the commands.

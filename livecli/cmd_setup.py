@@ -14,7 +14,10 @@ from .client import CONFIG_DIR, CONFIG_FILE, LiveError, call, config, port
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-SCRIPT_SRC = os.path.join(REPO, "remote_script", "LiveCLI")
+# Installed package (pip/Homebrew): livecli/remote_script/LiveCLI; git checkout: <repo>/remote_script/LiveCLI
+SCRIPT_SRC = next((p for p in (os.path.join(HERE, "remote_script", "LiveCLI"),
+                               os.path.join(REPO, "remote_script", "LiveCLI")) if os.path.isdir(p)),
+                  os.path.join(REPO, "remote_script", "LiveCLI"))
 
 
 def user_library():
@@ -231,3 +234,16 @@ def c_skill(a):
             fh.write(text)
         return C.out({"installed": os.path.join(d, "SKILL.md")}, "skill written to %s" % os.path.join(d, "SKILL.md"))
     raise LiveError("usage: live skill print|install [--dir DIR]")
+
+
+@C.command("version", "version", "LiveCLI version, and the Remote Script version if Live is running", "other")
+def c_version(a):
+    from . import __version__
+    info = {"livecli": __version__, "remote_script_bundled": script_version(SCRIPT_SRC), "remote_script_running": None}
+    try:
+        info["remote_script_running"] = call("ping", timeout=2).get("version")
+    except LiveError:
+        pass
+    C.out(info, "livecli %s (Remote Script v%s bundled%s)" % (
+        __version__, info["remote_script_bundled"],
+        ", v%s running in Live" % info["remote_script_running"] if info["remote_script_running"] else ", Live not running"))
