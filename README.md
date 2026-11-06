@@ -34,7 +34,7 @@ Requirements: macOS, Ableton Live 11.3 or later (tested on Live 12.4), Python 3.
 
 1. Install the `live` command, one of:
    - Homebrew: `brew install nostoi-labs/tap/livecli`
-   - pipx or pip: `pipx install livecli`
+   - pipx or pip: `pipx install nostoi-livecli`
    - from git: `git clone https://github.com/nostoi-labs/livecli` and `ln -s "$PWD/livecli/live" ~/.local/bin/live`
 2. `live setup` copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
 3. In Live, open **Settings > Link, Tempo & MIDI**. In a free **Control Surface** slot choose **LiveCLI**, with Input and Output set to None.
@@ -49,7 +49,7 @@ A user can simply tell their agent: *"I want to use LiveCLI: install it and add 
 
 **What the agent does (terminal):**
 1. Check the platform: macOS with Ableton Live 11.3 or later (12.x recommended), Python 3.9+.
-2. Get LiveCLI: `brew install nostoi-labs/tap/livecli`, or `pipx install livecli`, or `git clone https://github.com/nostoi-labs/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`).
+2. Get LiveCLI: `brew install nostoi-labs/tap/livecli`, or `pipx install nostoi-livecli`, or `git clone https://github.com/nostoi-labs/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`).
 3. `live setup`: copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
 4. Optional probes for measurements: install the Reference Probe or Loudline Probe package (VST3, notarized) from the Releases page.
 5. `live skill install` (Claude Code; `--dir <project>/.claude/skills/livecli` for a project skill). Next session the agent knows the commands.
