@@ -4,7 +4,9 @@ import importlib.util
 import json
 import os
 import re
+import signal
 import statistics
+import struct
 import sys
 import time
 
@@ -758,7 +760,8 @@ def c_bounce(a):
     beats_per_bar = n * 4.0 / d
     start, end = (start_bar - 1) * beats_per_bar, (start_bar - 1 + bars) * beats_per_bar
     armed = [t["ref"] for t in ts if t.get("arm")]
-    selected_before = None
+    # a track armed only by Live's automatic arm is the selected one: select it again at the end, or it stays disarmed
+    auto_armed = [t["ref"] for t in ts if t.get("implicit_arm") and not t.get("arm")]
     new = call("track_create", kind="audio", name=name, index=-1)
     ref = new["ref"]
     old = {k: s_[k] for k in ("position", "loop", "loop_start", "loop_length", "punch_in", "punch_out")}
@@ -787,11 +790,15 @@ def c_bounce(a):
         # punch in/out on the loop region: Live itself records exactly from start to end
         # (punch uses the loop brace; the loop switch stays off so playback doesn't jump back)
         call("set_song", loop=False, loop_start=start, loop_length=end - start, punch_in=True, punch_out=True)
+        # Live cannot jump past the end of the song (an empty or short set): then play from the start and wait
+        from_ = max(0.0, start - preroll)
+        if s_.get("song_length") is not None and from_ > s_["song_length"]:
+            from_ = 0.0
         call("play")
-        call("jump", time=max(0.0, start - preroll))
+        call("jump", time=from_)
         call("record", on=True)
         sec_per_beat = 60.0 / s_["tempo"]
-        deadline = time.time() + (end - start + preroll * 2) * sec_per_beat + 10
+        deadline = time.time() + (end - from_ + preroll) * sec_per_beat + 10
         print("recording %s from bar %g for %g bars..." % (src_name, start_bar, bars), file=sys.stderr)
         prev = None
         while time.time() < deadline:
@@ -807,7 +814,13 @@ def c_bounce(a):
             call("track_set", track=ref, arm=False)
             for r_ in armed:
                 call("track_set", track=r_, arm=True)
-        call("set_song", **old)
+        if auto_armed:
+            call("select", track=auto_armed[0])
+        try:
+            call("set_song", **old)
+        except LiveError:                    # the old position may be past the end of the song
+            old.pop("position", None)
+            call("set_song", **old)
     time.sleep(0.5)
     clips = call("arrangement", track=ref)
     info = {"track": ref, "name": name, "source": src_name, "start_bar": start_bar, "bars": bars, "clips": clips,
@@ -1317,6 +1330,16 @@ def c_sync(a):
             raise LiveError("the probes don't support 'onsets' (needs Reference/Loudline Probe 0.1.2+)")
         res = _onsets_parallel([pt, pr], sec, threshold)
         mt, mr = _timing(res[pt[1]["uid"]], grid), _timing(res[pr[1]["uid"]], grid)
+        # the probes sit at the end of the chain, before Live's delay compensation: the latency the devices declare
+        # (an Overbridge plugin declares tens of ms) is compensated by Live, so it is not an offset to correct
+        comp = {}
+        if "--probes" not in a:
+            for key, tr_ in (("track", t), ("reference", rt)):
+                comp[key] = round(sum(d.get("latency_ms") or 0.0 for d in track(tr_["ref"])["devices"]), 3)
+            for m_, key in ((mt, "track"), (mr, "reference")):
+                if m_ and comp[key]:
+                    m_["declared_latency_ms"] = comp[key]
+                    m_["median_ms"] = round(m_["median_ms"] - comp[key], 3)
     finally:
         if "--keep" not in flags:
             for ref_ in cleanup:
@@ -1340,29 +1363,43 @@ def c_sync(a):
     if JSON:
         return out(resd)
     print("%s vs %s, %gs, grid %s" % (names[0], names[1], sec, grid))
-    print("  track:     %d transients, median %+.2f ms from the grid (spread %.2f ms)" % (mt["onsets"], mt["median_ms"], mt["spread_ms"]))
-    print("  reference: %d transients, median %+.2f ms from the grid (spread %.2f ms)" % (mr["onsets"], mr["median_ms"], mr["spread_ms"]))
+    for label, m_ in (("track:    ", mt), ("reference:", mr)):
+        print("  %s %d transients, median %+.2f ms from the grid (spread %.2f ms)%s" % (
+            label, m_["onsets"], m_["median_ms"], m_["spread_ms"],
+            ", after the %.2f ms of latency the devices declare (Live compensates it)" % m_["declared_latency_ms"]
+            if m_.get("declared_latency_ms") else ""))
     if abs(late) < 0.1:
         print("  in time: no Track Delay needed")
     else:
         print("  %s is %s by %.2f ms: set its Track Delay to %+.2f ms" % (names[0], "late" if late > 0 else "early", abs(late), -late))
+        print("  note: the probes sit in the device chain, before Live applies Track Delay, so 'sync' reads the same value "
+              "after you set it; check the result with 'live grid' (it records after the mixer) or by ear against Live's metronome")
     if mt["spread_ms"] > 1.5:
         print("  warning: the track's transients are spread (swing, humanized or off-grid notes): use a straight part, "
               "like a kick on quarters, for a precise value")
 
 
 def file_onsets(path, offset_s, duration_s, sr=48000, refractory_s=0.05):
-    """Transient times (s, from offset) in an audio file, standard library + ffmpeg. An onset is the first sample whose
-    1 ms envelope reaches half (-6 dB) of the transient's peak; refractory 50 ms."""
-    import array
-    import subprocess
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", "%.6f" % offset_s, "-t", "%.6f" % duration_s, "-i", path,
-                          "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"], capture_output=True).stdout
-    x = array.array("f")
-    x.frombytes(raw[: len(raw) // 4 * 4])
+    """Transient times (s, from offset) in an audio file. WAV and AIFF (what Live records) are read with the standard
+    library; other formats need ffmpeg. An onset is the first sample whose 1 ms envelope reaches half (-6 dB) of the
+    transient's peak; refractory 50 ms."""
+    from . import audiofile
+    try:
+        x, sr = audiofile.read_mono(path, offset_s, duration_s)
+    except (audiofile.AudioFileError, struct.error, OSError) as e:
+        import array
+        import shutil
+        import subprocess
+        ff = shutil.which("ffmpeg") or ("/opt/homebrew/bin/ffmpeg" if os.path.exists("/opt/homebrew/bin/ffmpeg") else None)
+        if not ff:
+            raise LiveError("could not read %s (%s); install ffmpeg for other formats" % (path, e))
+        raw = subprocess.run([ff, "-v", "error", "-ss", "%.6f" % offset_s, "-t", "%.6f" % duration_s, "-i", path,
+                              "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"], capture_output=True).stdout
+        x = array.array("f")
+        x.frombytes(raw[: len(raw) // 4 * 4])
     n = len(x)
     if n == 0:
-        raise LiveError("could not decode %s (is ffmpeg installed?)" % path)
+        raise LiveError("could not decode %s" % path)
     # high-pass ~150 Hz first: the attack of a kick or click is rich in highs, the ripple of low notes is not
     import math as _m
     rc = 1.0 / (2 * _m.pi * 150.0)
@@ -2360,6 +2397,10 @@ def _load_modules():
     from . import cmd_setup, cmd_midi, cmd_offline, cmd_mix, cmd_hardware  # noqa: F401  (they register their commands)
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main(argv=None):
     global JSON
     _load_modules()
@@ -2371,6 +2412,10 @@ def main(argv=None):
     if not a:
         a = ["help"]
     name = ALIASES.get(a[0], a[0])
+    # kill/hangup (e.g. an ssh session that drops) behave like Ctrl-C, so cleanup in 'finally' blocks runs:
+    # probes added by fingerprint/latency/abx are removed and muted tracks get their volume back
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _interrupt)
     if name not in COMMANDS:
         print("live: unknown command '%s' (live help)" % a[0], file=sys.stderr)
         return 2

@@ -113,7 +113,7 @@ def c_doctor(a):
     _check(rows, True, "probe servers", ", ".join("%s %s" % (s.info.get("product"), s.info.get("version")) for s in srvs) or
            "none (load a probe plugin to use measurements)")
     ff = shutil.which("ffmpeg") or (os.path.exists("/opt/homebrew/bin/ffmpeg") and "/opt/homebrew/bin/ffmpeg")
-    _check(rows, True, "ffmpeg (for grid, capture)", ff or "not found: 'brew install ffmpeg' to use grid and capture")
+    _check(rows, True, "ffmpeg (for capture)", ff or "not found: 'brew install ffmpeg' to use capture (grid reads WAV/AIFF without it)")
     if C.JSON:
         return C.out({"ok": all(r["ok"] for r in rows), "checks": rows})
     for r in rows:
@@ -209,7 +209,7 @@ Start with `live doctor` if anything fails; `live wait` waits for Live.
 - **Levels:** `live gainstage 10` (tracks) and `live gainstage 10 --hardware` (into every External Audio Effect): VU near 0, peaks under -6 dBFS.
 - **What does this plugin or outboard do?** `live probe-add <t> after <prev> pre`, `live probe-add <t> after <device> post`, then `live compare pre post 10`.
 - **Latency of a device or hardware insert:** `live latency <t> <device>` while it plays; the user types the Hardware Latency correction.
-- **Track Delay for Overbridge / MIDI-clock gear:** `live sync <t>` (probes, pulse reference) or `live grid <t>` (recording); the user types the value.
+- **Track Delay for Overbridge / MIDI-clock gear:** first make sure the device follows Live's transport (Overbridge: the plugin's Clock and Transport sync, with Live's MIDI Sync off on that port). Then `live sync <t>` (probes, pulse reference; subtracts the latency the devices declare, which Live compensates) or `live grid <t>` (recording); the user types the value. `sync` cannot see a Track Delay once set: check with `grid` or by ear.
 - **Did it get better?** `live snapshot x --measure`, change, `live explain x`.
 - **Mix vs reference:** reference on its own track with a probe, then `live refcompare <mix-probe> <ref-probe>`.
 - **Which plugin for a job:** `live plugins <query>` (e.g. `la-2a`, `opto`, `plate`, `tape`), answer from what the user owns.

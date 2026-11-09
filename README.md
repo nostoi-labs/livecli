@@ -129,13 +129,13 @@ Write your own probe in any language. If it speaks the protocol, `live` will use
 
 ## Track Delay for devices with their own sequencer
 
-Overbridge devices and hardware synced to MIDI clock play from their own sequencer: Live compensates only the latency the plugin *declares*. If the real one differs, the track is early or late and you fix it with Track Delay (Live's API cannot set it). `live grid` measures it on the audio:
+Overbridge devices and hardware synced to MIDI clock play from their own sequencer: Live compensates only the latency the plugin *declares*. If the real one differs, the track is early or late and you fix it with Track Delay (Live's API cannot set it).
 
-1. Calibrate once with a dry sound from the device's own sequencer (its metronome, or a kick on the grid): the latency belongs to the path (device, USB, buffers), not to the sound, so the value also holds for pads and effects.
-2. `live grid <track>` gives the median offset from the grid; subtract the offset of a reference sequenced by Live (the detector's attack bias, e.g. +1.4 ms for a Drift click). The difference, with the sign flipped, is the Track Delay.
-3. Re-measure after setting it.
+1. **Sync first.** For Overbridge devices use the plugin's own sync (Clock and Transport in the plugin header) and turn off Live's MIDI clock (Sync) on that device's output port. Live's MIDI clock is not delay-compensated, and over plain MIDI clock a device can lock with a different phase at every start: no Track Delay can fix that. Tested with a Digitakt II: phase changing by up to 300 ms between starts on MIDI clock, stable to 0.3 ms with Overbridge sync.
+2. **Measure** with a dry sound from the device's own sequencer (its metronome, or a kick on the grid): the latency belongs to the path (device, USB, buffers), not to the sound. `live sync <track>` (playback running) reads the transients with probes and subtracts the latency the track's devices declare, since Live compensates that itself (an Overbridge plugin declares tens of ms). `live grid <track>` records the track after the mixer instead; subtract the offset of a reference sequenced by Live (the detector's attack bias, e.g. +1.4 ms for a Drift click).
+3. **Set** the Track Delay to the value with the sign flipped, and check it with `live grid` or by ear against Live's metronome: `sync` reads its probes inside the device chain, before Live applies Track Delay, so it keeps showing the original offset.
 
-Tested blind in Live 12.4.16: a hidden 21 ms delay on a click track measured as 21.0 ms; after Track Delay -21 ms the track was back on the reference within 0.01 ms.
+Tested in Live 12.4.16: a hidden 21 ms delay on a click track measured as 21.0 ms; after Track Delay -21 ms the track was back on the reference within 0.01 ms. A Digitakt II on Overbridge sync (44.4 ms declared by the plugin) measured +1.9 ms: no Track Delay needed.
 
 ## Config
 
