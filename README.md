@@ -30,7 +30,7 @@ $ live compare pre post 10
 
 ## Install
 
-Requirements: macOS, Ableton Live 11.3 or later (tested on Live 12.4), Python 3.9+ (standard library only).
+Requirements: macOS, Ableton Live 11.3 or later (tested on Live 12.4), Python 3.9+ (standard library only). The probe plugins are built for Apple Silicon only (macOS 12 or later; Loudline Probe needs macOS 13).
 
 1. Install the `live` command, one of:
    - Homebrew: `brew install nostoi-labs/tap/livecli`
@@ -39,7 +39,7 @@ Requirements: macOS, Ableton Live 11.3 or later (tested on Live 12.4), Python 3.
 2. `live setup` copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
 3. In Live, open **Settings > Link, Tempo & MIDI**. In a free **Control Surface** slot choose **LiveCLI**, with Input and Output set to None.
 4. Check: `live doctor`, then `live ping` should print `pong`.
-5. Optional, for measurements: the probe plugins (VST3, notarized) from the [Releases](https://github.com/nostoi-labs/livecli/releases) page, or `brew install --cask nostoi-labs/tap/reference-probe` (MIT) and `nostoi-labs/tap/loudline-probe` (freeware). Install them with Live closed, then **Settings > Plug-ins > Rescan**.
+5. Optional, for measurements: the probe plugins (VST3, Apple Silicon, notarized) from the [Releases](https://github.com/nostoi-labs/livecli/releases) page, or `brew install --cask nostoi-labs/tap/reference-probe` (MIT) and `nostoi-labs/tap/loudline-probe` (freeware). Install them with Live closed, then **Settings > Plug-ins > Rescan**.
 
 Live loads Remote Scripts at startup. After updating LiveCLI run `live setup` again: changes to `commands.py` are reloaded without a restart, changes to `__init__.py` need a Live restart.
 
@@ -51,7 +51,7 @@ A user can simply tell their agent: *"I want to use LiveCLI: install it and add 
 1. Check the platform: macOS with Ableton Live 11.3 or later (12.x recommended), Python 3.9+.
 2. Get LiveCLI: `brew install nostoi-labs/tap/livecli`, or `pipx install nostoi-livecli`, or `git clone https://github.com/nostoi-labs/livecli` and link `live` into the PATH (`ln -s "$PWD/livecli/live" ~/.local/bin/live`).
 3. `live setup`: copies the Remote Script into Live's User Library (`Remote Scripts/LiveCLI`).
-4. Optional probes for measurements: install the Reference Probe or Loudline Probe package (VST3, notarized) from the Releases page.
+4. Optional probes for measurements (Apple Silicon Macs only): install the Reference Probe or Loudline Probe package (VST3, notarized) from the Releases page, or the Homebrew casks `nostoi-labs/tap/reference-probe` and `nostoi-labs/tap/loudline-probe`.
 5. `live skill install` (Claude Code; `--dir <project>/.claude/skills/livecli` for a project skill). Next session the agent knows the commands.
 6. `live doctor` until every line is ✓, then `live ping`.
 
@@ -68,9 +68,26 @@ A user can simply tell their agent: *"I want to use LiveCLI: install it and add 
 
 ## Commands
 
-`live help` lists everything; `live help <command>` shows one command. The groups are:
+`live help` lists everything; `live help <command>` shows one command.
 
-- **Info:** `ping`, `song`, `events` (pushed by Live's listeners), `cpu`, `impact` (CPU impact per track), `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`, `automation` (automated and overridden parameters), `events` (what changes while it happens)
+A few everyday jobs, to give the idea:
+
+| You want to | Command |
+|---|---|
+| know if the open set has problems (armed tracks, overridden automation, heavy plugins left on, latency) | `live check` |
+| check an old project before opening it (missing samples, two inserts on the same hardware outputs) | `live als-lint project.als` |
+| see levels in dBu going into every hardware insert | `live gainstage 10 --hardware` |
+| know the real latency of a plugin or of an outboard insert | `live latency vox soothe2` |
+| find the Track Delay for an Overbridge device | `live sync digitakt` |
+| compare a compressor on and off at the same loudness | `live abx vox comp` |
+| switch off the heavy plugins while recording, and back on later | `live mode recording`, `live mode restore` |
+| try things and go back | `live snapshot before`, `live diff`, `live restore before` |
+| know which of your plugins do an LA-2A | `live plugins la-2a` |
+| check that an outboard unit still measures like last month | `live fingerprint vox distressor --compare` |
+
+All the commands, by group:
+
+- **Info:** `ping`, `song`, `events` (what changes in the set while it happens, pushed by Live's listeners), `cpu`, `impact` (CPU impact per track), `tracks`, `devices`, `params`, `mixer`, `meters`, `routing`, `input`, `locators`, `scenes`, `clips`, `arrangement`, `notes`, `automation` (automated and overridden parameters)
 - **Transport:** `play`, `stop`, `continue`, `stop-clips`, `record`, `undo`, `redo`, `jump <bar>`, `tempo`, `signature`, `metronome`, `loop`, `tap`, `capture-midi`, `locator`, `locator-delete`, `re-enable-automation`, `back-to-arrangement`
 - **Tracks and mixer:** `track-new`, `track-delete`, `track-duplicate`, `track-rename`, `track-color`, `solo`, `mute`, `arm`, `monitor`, `volume`, `pan`, `send`, `pan-mode` (stereo or split), `crossfade`, `activator`, `cue`
 - **Devices:** `set`, `on`, `off`, `ab` (Live 12 A/B compare), `preset` (a plugin's presets, when it publishes them to Live, and which parameters it hides from Live), `sidechain`, `insert` (a Live device by name, no browser), `duplicate`, `load`, `delete`, `move`, `rename`, `replace`, `mode`. `devices` also shows the latency Live assumes for each device.
@@ -80,10 +97,10 @@ A user can simply tell their agent: *"I want to use LiveCLI: install it and add 
 - **Audio:** `bounce <track|master> <start-bar> <bars>` (records a track's output or the master into a new audio track, in real time, with Live's punch in/out: the API has no export, this is the next best thing; prints the file and where the region starts in it), `capture` (optional, see below)
 - **Probes:** `probes`, `probe-add`, `measure`, `watch`, `compare`, `mix`, `latency`, `sync`, `probe-reset`, `probe-label`
 - **Timing:** `grid <track> [bars] [start-bar] [--grid 1/8]` records a track (bounce) and measures where its transients fall against Live's grid; `sync` does the same live with probes (`onsets`). See *Track Delay* below.
-- **Setup and reliability:** `setup` (installs the Remote Script), `doctor`, `wait`, `config`, `completion`, `skill` (a SKILL.md for agents, generated from these commands). Errors are JSON with a stable `code` and a `hint`; exit codes 3 Live not running, 4 not found or ambiguous, 5 not supported by Live's API, 6 probe.
+- **Setup and reliability:** `setup` (installs the Remote Script), `doctor`, `version`, `wait`, `config`, `completion`, `skill` (a SKILL.md for agents, generated from these commands). Errors are JSON with a stable `code` and a `hint`; exit codes 3 Live not running, 4 not found or ambiguous, 5 not supported by Live's API, 6 probe.
 - **Safety net:** `snapshot [name]` saves every mixer, device and chain value; `diff` shows what changed since (or between two snapshots); `restore <name> [filter]` puts values back, in one undo step; `snapshots` lists them.
 - **View and offline:** `show` (bring a track, device or clip into view for the user), `view` (Session, Arranger, Detail/Clip...), `als`, `als-lint` (missing samples, hardware outputs shared by several External Audio Effects, devices off...), `als-diff` (what changed between two versions of a set). Read-only.
-- **Mix tools nobody else has (with probes):** `abx` (level-matched A/B of a device: equal loudness, honest comparison), `gainstage` (peak, VU and dBu per track and into every hardware insert, with your interface calibration), `phase` (delay and polarity between two tracks), `explain` (what a set of changes did to the sound: `snapshot --measure` first), `refcompare` (your mix against a reference playing in Live, tonal balance per band), `check` (set health).
+- **Mix tools (with probes):** `abx` (level-matched A/B of a device: equal loudness, honest comparison), `gainstage` (peak, VU and dBu per track and into every hardware insert, with your interface calibration), `phase` (delay and polarity between two tracks), `explain` (what a set of changes did to the sound: `snapshot --measure` first), `refcompare` (your mix against a reference playing in Live, tonal balance per band), `check` (set health).
 - **Hybrid studio:** `fingerprint` (frequency response, gain, noise, latency and polarity of a hardware insert or a device, with test signals from the probes, compared over time; `fingerprints` lists the history), `recall` (Live snapshot + outboard settings from SessionRecall + fingerprints).
 - **Other:** `inspect` (what Live's API offers on the song, a track, mixer, device, parameter, clip or scene: properties with values and methods; read-only), `reload` (re-read the Remote Script commands inside Live), `call <cmd> '<json>'` (raw call to any Remote Script command), `help`.
 - **Italian aliases:** `stato`, `tracce`, `parametri`, `imposta`, `accendi`/`spegni`, `carica`, `cancella`, `sposta`, `sostituisci`, `cerca`, `livelli`, `mandata`, `locatori`, `vai`, `modo`, `cattura`, `sonde`, `misura`, `confronta`, …
@@ -147,12 +164,17 @@ Tested in Live 12.4.16: a hidden 21 ms delay on a click track measured as 21.0 m
   "modes": {"recording": ["soothe2", "Ozone"]},
   "probe_plugin": "Loudline Probe",
   "capture": {"enabled": false, "device": "Your Audio Interface", "max_seconds": 600},
+  "gainstage": {"dbu_at_0dbfs": 24, "vu_ref_dbfs": -18, "peak_max_dbfs": -6, "vu_ref_by_device": {"Distressor": -20}},
+  "sessionrecall_db": "~/Documents/SessionRecall/SessionRecall.db",
   "extensions": ["~/my-studio/live_ext.py"]
 }
 ```
 
 - **modes:** `live mode recording` switches off every device whose name contains one of these strings, and saves the list. `live mode restore` switches them back on. Useful to record at low latency with heavy look-ahead plugins in the set.
 - **capture:** `live capture <seconds> <file.wav>` records an input device with ffmpeg launched **by Live**, so it inherits Live's microphone permission (a terminal or tmux usually lacks it). Off by default; it needs `ffmpeg` (`brew install ffmpeg`).
+- **gainstage:** the calibration `live gainstage` uses. `dbu_at_0dbfs` is the analog level of your interface at digital full scale (default +24 dBu: check the manual of your converter, +18, +20 and +24 are common). `vu_ref_dbfs` is the level that reads 0 VU (default -18 dBFS), `peak_max_dbfs` the highest peak you accept (default -6). `vu_ref_by_device` sets a different VU reference for inserts whose name contains the key, for units you like to drive hotter or cooler.
+- **sessionrecall_db:** where `live recall` finds the SessionRecall database (read-only; the path above is the default). `sessionrecall_labels` (`{"Model name": ["Input", "Output", ...]}`) names the controls of a unit, in SessionRecall's order, when you want names instead of "control 1".
+- **probe_plugins:** names that identify probe devices in a set (default `["Loudline Probe", "Reference Probe", "Probe"]`), for probes of your own. `probe_browser_path` loads the probe from a fixed browser path instead of searching for `probe_plugin`.
 - **extensions:** Python files (also any `*.py` in `~/.config/live-cli/extensions/`) that add your own commands:
 
 ```python

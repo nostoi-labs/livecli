@@ -333,7 +333,6 @@ def c_set_song(cs, req):
 
 
 def c_tracks(cs, req):
-    s = _song(cs)
     out = []
     for ref, t in _tracks(cs):
         md = t.mixer_device

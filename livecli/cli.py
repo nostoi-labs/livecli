@@ -1322,8 +1322,8 @@ def c_sync(a):
         names = (t["name"], rt["name"] + (" (temporary: probe impulses on quarters)" if pulse else
                                           " (temporary, Drift click on quarters)" if temp_ref else ""))
         if pulse:
-            r_ = src[0].request({"cmd": "pulse", "uid": src[1]["uid"], "every": 1.0, "offset": 0.0,
-                                 "seconds": min(10.0, sec + 2.0), "level_db": -20, "mode": "replace"})
+            src[0].request({"cmd": "pulse", "uid": src[1]["uid"], "every": 1.0, "offset": 0.0,
+                            "seconds": min(10.0, sec + 2.0), "level_db": -20, "mode": "replace"})
             time.sleep(0.3)
     try:
         if not pt[0].has("onsets") or not pr[0].has("onsets"):

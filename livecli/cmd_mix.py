@@ -30,7 +30,6 @@ def ensure_probe(ref, where="end", label="lc"):
     elif where[0] == "after":
         pos = str(int(where[1]) + 1) if int(where[1]) + 1 < len(devs) else None
         args = [ref, "after", where[1], label]
-        pos_existing = pos
     else:
         i = int(where[1])
         pos = str(i - 1) if i > 0 else None

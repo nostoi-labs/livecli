@@ -1,5 +1,4 @@
 """MIDI tools on clip notes (pure Python on top of notes / set_notes) and text patterns."""
-import json
 import random
 
 from . import cli as C

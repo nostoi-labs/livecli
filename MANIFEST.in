@@ -1,0 +1,4 @@
+include CHANGELOG.md live
+recursive-include tests *.py
+recursive-include docs *.md
+include probes/mock/mock_probe.py
