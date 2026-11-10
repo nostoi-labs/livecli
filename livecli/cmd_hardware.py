@@ -238,10 +238,10 @@ def sr_settings(db, sid, version=None):
     return out
 
 
-@C.command("recall", "recall sessions | show <session> | save <name> [--session S] [--fingerprint] | check <name> | list",
+@C.command("recall", "recall sessions | show <session> | save <name> [--session S] [--fingerprint [--tracks t1,t2]] | check <name> | list",
            "session recall for a hybrid studio: Live snapshot + outboard settings from SessionRecall (read-only) + "
            "fingerprints of hardware inserts; 'check' shows what changed in Live, the outboard settings to verify by eye, "
-           "and re-measures the hardware", "audio")
+           "and the command to re-measure each hardware insert (fingerprint --compare)", "audio")
 def c_recall(a):
     op = a[0] if a else "list"
     if op == "sessions":
@@ -270,7 +270,7 @@ def c_recall(a):
                                (r.get("session") or {}).get("title"), ", ".join(r.get("fingerprints") or []) or "-") for r in rows)
                      or "no recalls saved")
     if op == "save":
-        C.need(a, 2, "recall save <name> [--session S] [--fingerprint]")
+        C.need(a, 2, "recall save <name> [--session S] [--fingerprint [--tracks t1,t2]]")
         name = a[1]
         rec = {"name": name, "time": time.strftime("%Y-%m-%d %H:%M:%S"), "snapshot": C._take(), "fingerprints": []}
         if "--session" in a:
@@ -279,7 +279,14 @@ def c_recall(a):
             rec["session"] = s
             rec["outboard"] = sr_settings(db, s["id"])
         if "--fingerprint" in a:
+            # only the tracks asked for; the master only if named: an insert there (a summing mixer, a bus
+            # compressor) sends the test signals straight to the speakers
+            only = None
+            if "--tracks" in a:
+                only = {C.find_track(C.tracks(), q)["ref"] for q in a[a.index("--tracks") + 1].split(",")}
             for t in C.tracks():
+                if (only is not None and t["ref"] not in only) or (only is None and t["ref"] == "m"):
+                    continue
                 for d in t["devices"]:
                     if d["class"] == "ProxyAudioEffectDevice" and d["on"]:
                         fn = "%s-%s" % (name, d["name"])

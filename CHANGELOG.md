@@ -5,7 +5,8 @@
 Tested in Live 12.4.16 with Reference/Loudline Probe 0.1.4, on a studio with an Antelope Orion 32+ Gen 4, outboard (Empirical Labs Distressor and Fatso, Bricasti M7, Hologram and OTO pedals) and a Digitakt II on Overbridge.
 
 - Packaging: `pip`/`pipx install nostoi-livecli` (the command stays `live`, the Remote Script is inside the package), Homebrew tap `nostoi-labs/tap`, `live version`.
-- Hardware tests: `fingerprint` on ten outboard units (gain, latency, polarity, noise, THD+N, response); `sync` on Overbridge.
+- Hardware tests: `fingerprint` on ten outboard units (gain, latency, polarity, noise, THD+N, response); `gainstage --hardware` (dBu into a Distressor); `recall` with SessionRecall and `fingerprint --compare`; `sync` on Overbridge.
+- `recall save --fingerprint --tracks t1,t2`: measure only the inserts on those tracks; the master is skipped unless named (an insert there sends the test signals to the speakers).
 - Fixes from the hardware tests: `sync` subtracts the latency the track's devices declare (Live compensates it; an Overbridge plugin declares about 44 ms) and says that it cannot see a Track Delay once set; `grid` reads WAV/AIFF with the standard library (ffmpeg only for other formats); `bounce`/`grid` work when the start is past the end of a short set, restore the automatically armed track and the play position; commands stopped with kill or a dropped ssh session clean up like Ctrl-C (probes removed, track volume restored). README: Overbridge sync instead of Live's MIDI clock.
 
 - Setup and reliability: `setup`, `doctor`, `wait`, `config`, `completion`, `skill`; error codes, hints, exit codes; CI.
